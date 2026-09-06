@@ -1,0 +1,68 @@
+name: Twin Stock Trading Monitor
+
+on:
+  schedule:
+    # Run every 5 minutes during US market hours (Mon-Fri)
+    # Cron schedule */5 13-22 * * 1-5 (UTC) covers both Eastern Daylight Time (EDT) and Eastern Standard Time (EST).
+    # monitor.py verifies the exact 09:30 to 16:00 America/New_York market window and exits cleanly if closed.
+    - cron: '*/5 13-22 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Bypass market hours check (run even if market is closed)'
+        required: false
+        type: boolean
+        default: false
+      dry_run:
+        description: 'Dry run (calculate metrics and test state without sending emails)'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: twin-stock-trading-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Intraday Pair Monitor
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Intraday Monitoring Script
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+          ALERT_EMAIL_FROM: ${{ secrets.ALERT_EMAIL_FROM }}
+          MARKET_TIMEZONE: ${{ vars.MARKET_TIMEZONE || 'America/New_York' }}
+          PAIRS_CONFIG: ${{ vars.PAIRS_CONFIG || 'KO:PEP,MSFT:AAPL,GOOGL:META' }}
+          Z_SCORE_THRESHOLD: '2.5'
+          SUSTAINED_PERIODS: '2'
+          ZERO_THRESHOLD: '0.25'
+          ROLLING_WINDOW: '78'
+          YFINANCE_DELAY_SECONDS: '1.0'
+        run: |
+          FLAGS=""
+          if [ "${{ inputs.force }}" = "true" ]; then
+            FLAGS="$FLAGS --force"
+          fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            FLAGS="$FLAGS --dry-run"
+          fi
+          python monitor.py $FLAGS
