@@ -152,7 +152,13 @@ class SupabaseBackend:
 
         records = []
         for idx, row in df.iterrows():
-            ts_str = idx.isoformat() if hasattr(idx, "isoformat") else str(idx)
+            # Normalize to UTC ISO format for consistent SQL string sorting and comparisons
+            try:
+                dt_utc = idx.tz_convert(pytz.utc) if hasattr(idx, "tz_convert") else pd.to_datetime(idx, utc=True)
+                ts_str = dt_utc.isoformat()
+            except Exception:
+                ts_str = idx.isoformat() if hasattr(idx, "isoformat") else str(idx)
+
             record = {
                 "ticker": ticker,
                 "timestamp": ts_str,
@@ -195,6 +201,7 @@ class SupabaseBackend:
                     .eq("ticker", ticker)
                     .gte("timestamp", cutoff)
                     .order("timestamp", desc=False)
+                    .limit(5000)
                     .execute()
                 )
                 if res.data:
@@ -211,6 +218,8 @@ class SupabaseBackend:
         df = pd.DataFrame(records)
         df["datetime"] = pd.to_datetime(df["timestamp"], utc=True)
         df = df.set_index("datetime").sort_index()
+        # Deduplicate index to prevent reindexing / concat errors
+        df = df[~df.index.duplicated(keep="last")]
         return df
 
     def prune_old_candles(self, ticker: str, days_to_keep: int = 10) -> None:
@@ -371,10 +380,13 @@ def compute_pair_metrics_from_cache(
     Spread = Price_A - (Locked_Beta * Price_B)
     Computes rolling mean, rolling std, and Z-score series.
     """
-    close_a = cached_df_a["close"].rename(ticker_a)
-    close_b = cached_df_b["close"].rename(ticker_b)
+    col_a = "close" if "close" in cached_df_a.columns else "Close"
+    col_b = "close" if "close" in cached_df_b.columns else "Close"
+    close_a = cached_df_a[col_a].rename(ticker_a)
+    close_b = cached_df_b[col_b].rename(ticker_b)
 
     aligned = pd.concat([close_a, close_b], axis=1).dropna()
+    aligned = aligned[~aligned.index.duplicated(keep="last")]
     if len(aligned) < max(20, rolling_window // 4):
         logger.warning(
             f"Insufficient aligned cached candles ({len(aligned)}) for pair {ticker_a}-{ticker_b}."
@@ -764,13 +776,15 @@ def main() -> int:
             new_df_a = fetch_intraday_candles(ticker_a, period=period_a, interval="5m", delay=api_delay)
             new_df_b = fetch_intraday_candles(ticker_b, period=period_b, interval="5m", delay=api_delay)
 
-            if not new_df_a.empty:
-                backend.upsert_candles(ticker_a, new_df_a)
-                backend.prune_old_candles(ticker_a, days_to_keep=10)
+            if new_df_a.empty or new_df_b.empty:
+                logger.warning(f"[{pair_key}] Fresh candle data unavailable for {ticker_a} or {ticker_b}. Skipping evaluation.")
+                continue
 
-            if not new_df_b.empty:
-                backend.upsert_candles(ticker_b, new_df_b)
-                backend.prune_old_candles(ticker_b, days_to_keep=10)
+            backend.upsert_candles(ticker_a, new_df_a)
+            backend.prune_old_candles(ticker_a, days_to_keep=10)
+
+            backend.upsert_candles(ticker_b, new_df_b)
+            backend.prune_old_candles(ticker_b, days_to_keep=10)
 
             # Load full 7-day 5m dataset from cache
             full_cached_a = backend.load_cached_candles(ticker_a, days=7)
