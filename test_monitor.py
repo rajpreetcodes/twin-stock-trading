@@ -288,5 +288,10 @@ def test_custom_user_agent_session():
 
 
 def test_parse_pairs():
-    pairs = parse_pairs("KO:PEP, MSFT:AAPL, GOOGL-META")
-    assert pairs == [("KO", "PEP"), ("MSFT", "AAPL"), ("GOOGL", "META")]
+    # Explicit custom pairs
+    pairs = parse_pairs("KO:PEP, V:MA, HD:LOW, XOM:CVX")
+    assert pairs == [("KO", "PEP"), ("V", "MA"), ("HD", "LOW"), ("XOM", "CVX")]
+
+    # Default True Twins fallback
+    default_pairs = parse_pairs(None)
+    assert default_pairs == [("KO", "PEP"), ("V", "MA"), ("HD", "LOW"), ("XOM", "CVX")]

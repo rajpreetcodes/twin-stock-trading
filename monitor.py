@@ -669,8 +669,8 @@ def send_alert_email(
 # Main Orchestrator
 # ---------------------------------------------------------------------------
 def parse_pairs(pairs_input: Optional[str]) -> List[Tuple[str, str]]:
-    """Parse comma-separated pairs like 'KO:PEP,MSFT:AAPL'."""
-    raw = pairs_input or os.environ.get("PAIRS_CONFIG", "KO:PEP,MSFT:AAPL,GOOGL:META")
+    """Parse comma-separated pairs like 'KO:PEP,V:MA'."""
+    raw = pairs_input or os.environ.get("PAIRS_CONFIG", "KO:PEP,V:MA,HD:LOW,XOM:CVX")
     parsed: List[Tuple[str, str]] = []
     for item in raw.split(","):
         item = item.strip()

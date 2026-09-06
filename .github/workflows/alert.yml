@@ -51,7 +51,7 @@ jobs:
           ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
           ALERT_EMAIL_FROM: ${{ secrets.ALERT_EMAIL_FROM }}
           MARKET_TIMEZONE: ${{ vars.MARKET_TIMEZONE || 'America/New_York' }}
-          PAIRS_CONFIG: ${{ vars.PAIRS_CONFIG || 'KO:PEP,MSFT:AAPL,GOOGL:META' }}
+          PAIRS_CONFIG: ${{ vars.PAIRS_CONFIG || 'KO:PEP,V:MA,HD:LOW,XOM:CVX' }}
           Z_SCORE_THRESHOLD: '2.5'
           SUSTAINED_PERIODS: '2'
           ZERO_THRESHOLD: '0.25'

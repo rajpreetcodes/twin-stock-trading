@@ -57,6 +57,19 @@ Run the script in [supabase_schema.sql](supabase_schema.sql) in your Supabase pr
 
 ---
 
+## Monitored Pairs: The "True Twins"
+
+The system focuses exclusively on genuine corporate "twins" with high cointegration, shared macroeconomic sensitivities, and identical input costs, preventing structural drift:
+
+| Pair | Companies | Fundamental Parity & Cointegration Logic |
+|------|-----------|------------------------------------------|
+| **`KO : PEP`** | **Coca-Cola vs. PepsiCo** | The gold standard of pairs trading. Identical input costs (aluminum, packaging, corn syrup) and consumer defensive sector demand. |
+| **`V : MA`** | **Visa vs. Mastercard** | Pure tollbooth transaction models with zero balance-sheet credit risk, ~55% operating margins, and identical global payment rail exposure. |
+| **`HD : LOW`** | **Home Depot vs. Lowe's** | Home improvement retail duopoly tied directly to US housing turnover, mortgage rates, and lumber prices. |
+| **`XOM : CVX`** | **ExxonMobil vs. Chevron** | Global energy titans driven tick-for-tick by crude oil benchmarks (WTI/Brent), crack spreads, and OPEC+ policy. |
+
+---
+
 ## Local Installation & Testing
 
 1. **Install dependencies:**
