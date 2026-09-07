@@ -54,6 +54,9 @@ Trading_Strategy/
 Run the script in [supabase_schema.sql](supabase_schema.sql) in your Supabase project's **SQL Editor**. This creates:
 - `pair_state` (tracks daily locked Beta and alert status per pair)
 - `candle_cache` (stores 5m OHLCV candles with composite primary key `(ticker, timestamp)`)
+- `paper_portfolio` (singleton row tracking $100,000 starting bankroll, cash balance, and total equity)
+- `paper_positions` (active open pair positions, shares, entry/current prices, and floating unrealized P&L)
+- `paper_trades` (historical execution audit ledger recording every trade, shares, prices, capital, and realized P&L)
 
 ---
 

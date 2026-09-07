@@ -11,12 +11,14 @@ import pytz
 from monitor import (
     DEFAULT_USER_AGENT,
     SupabaseBackend,
+    calculate_trade_sizing,
     check_sustained_deviation,
     compute_ols_beta,
     compute_pair_metrics_from_cache,
     create_yf_session,
     evaluate_cooldown_and_zero_crossing,
     format_email_content,
+    format_human_timestamp,
     is_market_open,
     parse_pairs,
 )
@@ -256,7 +258,7 @@ def test_compute_pair_metrics_from_cache():
 
 
 # ---------------------------------------------------------------------------
-# Test Email Content Formatting
+# Test Email Content Formatting & Paper Trade Presentation
 # ---------------------------------------------------------------------------
 def test_format_email_content():
     subject, html_content, text_content = format_email_content(
@@ -274,11 +276,14 @@ def test_format_email_content():
         direction="UPPER",
     )
 
+    assert "Paper Trade: Short KO + Long PEP" in subject
     assert "KO" in subject and "PEP" in subject
-    assert "+2.85" in subject
     assert "$62.45" in html_content and "$171.20" in html_content
     assert "0.3645" in html_content
-    assert "2026-09-08 14:35:00 America/New_York" in html_content
+    assert "PAPER TRADE EXECUTED" in html_content
+    assert "Everyday Paper Portfolio Snapshot" in html_content
+    assert "Quant Reference:" in html_content
+    assert "WHAT WE TRADED:" in text_content
 
 
 def test_custom_user_agent_session():
@@ -314,12 +319,111 @@ def test_format_email_content_verification_mode():
         is_test=True,
     )
 
-    assert "[TEST VERIFICATION]" in subject
-    assert "XOM" in subject and "CVX" in subject
-    assert "-2.07" in subject
+    assert "[TEST]" in subject
+    assert "Paper Trade: Long XOM + Short CVX" in subject
     assert "System Verification Mode Active" in html_content
     assert "$118.50" in html_content and "$158.20" in html_content
     assert "0.7417" in html_content
-    assert "OVERSOLD" in html_content
-    assert "TWIN STOCK TRADING // STATISTICAL PAIR ALERT" in text_content
+    assert "PAPER TRADE EXECUTED" in html_content
+    assert "TWIN STOCK TRADING // PAPER TRADING DESK" in text_content
+
+
+# ---------------------------------------------------------------------------
+# Test Trade Sizing & Position Calculations
+# ---------------------------------------------------------------------------
+def test_calculate_trade_sizing():
+    shares_a, shares_b, cap_a, cap_b, total_cap = calculate_trade_sizing(
+        price_a=100.0,
+        price_b=200.0,
+        locked_beta=0.5,
+        target_leg_dollars=10000.0,
+    )
+    assert shares_a == 100
+    assert cap_a == 10000.0
+    # target_b = 10000 * 0.5 = 5000. 5000 / 200 = 25 shares
+    assert shares_b == 25
+    assert cap_b == 5000.0
+    assert total_cap == 15000.0
+
+
+# ---------------------------------------------------------------------------
+# Test Human-Readable Timestamp Formatting
+# ---------------------------------------------------------------------------
+def test_format_human_timestamp():
+    formatted = format_human_timestamp("2026-09-04T19:55:00+00:00")
+    assert "Sep 04, 2026" in formatted
+    assert "EDT" in formatted or "PM" in formatted or "AM" in formatted
+
+
+# ---------------------------------------------------------------------------
+# Test Paper Trading Engine Persistence (In-Memory Backend)
+# ---------------------------------------------------------------------------
+def test_paper_trading_persistence_memory_mode():
+    backend = SupabaseBackend(url=None, key=None)
+
+    # 1. Portfolio initialization
+    portfolio = backend.get_portfolio()
+    assert portfolio["cash_balance"] == 100000.0
+    assert portfolio["total_equity"] == 100000.0
+
+    # 2. Save Position
+    pos = {
+        "pair_key": "XOM-CVX",
+        "direction": "LONG_SPREAD",
+        "side_a": "BUY",
+        "ticker_a": "XOM",
+        "shares_a": 84,
+        "entry_price_a": 118.50,
+        "current_price_a": 118.50,
+        "side_b": "SELL_SHORT",
+        "ticker_b": "CVX",
+        "shares_b": 46,
+        "entry_price_b": 158.20,
+        "current_price_b": 158.20,
+        "locked_beta": 0.7417,
+        "entry_z_score": -2.07,
+        "capital_invested": 17231.20,
+        "unrealized_pnl": 0.0,
+        "unrealized_pnl_pct": 0.0,
+    }
+    backend.save_position(pos)
+    fetched_pos = backend.get_open_position("XOM-CVX")
+    assert fetched_pos is not None
+    assert fetched_pos["shares_a"] == 84
+
+    all_positions = backend.get_all_open_positions()
+    assert len(all_positions) == 1
+
+    # 3. Record Trade
+    trade = {
+        "trade_id": "test-uuid-1234",
+        "pair_key": "XOM-CVX",
+        "action": "ENTER_PAIR",
+        "direction": "LONG_SPREAD",
+        "side_a": "BUY",
+        "ticker_a": "XOM",
+        "shares_a": 84,
+        "price_a": 118.50,
+        "capital_a": 9954.0,
+        "side_b": "SELL_SHORT",
+        "ticker_b": "CVX",
+        "shares_b": 46,
+        "price_b": 158.20,
+        "capital_b": 7277.20,
+        "total_capital": 17231.20,
+        "z_score_at_trade": -2.07,
+        "beta_used": 0.7417,
+        "realized_pnl": 0.0,
+        "executed_at": "2026-09-07T16:00:00Z",
+    }
+    backend.record_trade(trade)
+    recent = backend.get_recent_trades(5)
+    assert len(recent) == 1
+    assert recent[0]["trade_id"] == "test-uuid-1234"
+
+    # 4. Delete Position
+    backend.delete_position("XOM-CVX")
+    assert backend.get_open_position("XOM-CVX") is None
+    assert len(backend.get_all_open_positions()) == 0
+
 

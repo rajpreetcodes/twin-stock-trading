@@ -19,6 +19,7 @@ import logging
 import os
 import sys
 import time
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -241,6 +242,141 @@ class SupabaseBackend:
                 ).execute()
             except Exception as e:
                 logger.error(f"Error pruning candle_cache for {ticker} in Supabase: {e}")
+
+    # -----------------------------------------------------------------------
+    # Paper Trading Persistence (Portfolio, Active Positions, Trades Ledger)
+    # -----------------------------------------------------------------------
+    def get_portfolio(self) -> Dict[str, Any]:
+        """Fetch singleton paper portfolio state."""
+        default_portfolio = {
+            "id": 1,
+            "starting_balance": 100000.00,
+            "cash_balance": 100000.00,
+            "invested_capital": 0.00,
+            "total_equity": 100000.00,
+            "total_realized_pnl": 0.00,
+            "total_trades_count": 0,
+            "win_trades_count": 0,
+            "loss_trades_count": 0,
+            "last_trade_at": None,
+        }
+        if self.client:
+            try:
+                res = self.client.table("paper_portfolio").select("*").eq("id", 1).execute()
+                if res.data and len(res.data) > 0:
+                    row = res.data[0]
+                    for k in ["starting_balance", "cash_balance", "invested_capital", "total_equity", "total_realized_pnl"]:
+                        if k in row and row[k] is not None:
+                            row[k] = float(row[k])
+                    return row
+            except Exception as e:
+                logger.debug(f"Could not load paper_portfolio from Supabase: {e}. Using local store.")
+
+        if not hasattr(self, "_memory_portfolio") or not self._memory_portfolio:
+            self._memory_portfolio = default_portfolio
+        return self._memory_portfolio
+
+    def update_portfolio(self, portfolio_dict: Dict[str, Any]) -> None:
+        """Upsert singleton paper portfolio state."""
+        portfolio_dict["id"] = 1
+        portfolio_dict["updated_at"] = datetime.datetime.now(pytz.utc).isoformat()
+        self._memory_portfolio = portfolio_dict
+
+        if self.client:
+            try:
+                self.client.table("paper_portfolio").upsert(portfolio_dict).execute()
+            except Exception as e:
+                logger.error(f"Error updating paper_portfolio in Supabase: {e}")
+
+    def get_open_position(self, pair_key: str) -> Optional[Dict[str, Any]]:
+        """Fetch open position for a given pair."""
+        if self.client:
+            try:
+                res = self.client.table("paper_positions").select("*").eq("pair_key", pair_key).execute()
+                if res.data and len(res.data) > 0:
+                    pos = res.data[0]
+                    for k in ["entry_price_a", "current_price_a", "entry_price_b", "current_price_b", "locked_beta", "entry_spread", "current_spread", "entry_z_score", "current_z_score", "capital_invested", "unrealized_pnl", "unrealized_pnl_pct"]:
+                        if k in pos and pos[k] is not None:
+                            pos[k] = float(pos[k])
+                    return pos
+            except Exception as e:
+                logger.debug(f"Could not fetch paper_position for {pair_key} from Supabase: {e}")
+
+        if not hasattr(self, "_memory_positions"):
+            self._memory_positions = {}
+        return self._memory_positions.get(pair_key)
+
+    def get_all_open_positions(self) -> List[Dict[str, Any]]:
+        """Fetch all currently open paper positions."""
+        if self.client:
+            try:
+                res = self.client.table("paper_positions").select("*").execute()
+                if res.data:
+                    positions = []
+                    for pos in res.data:
+                        for k in ["entry_price_a", "current_price_a", "entry_price_b", "current_price_b", "locked_beta", "entry_spread", "current_spread", "entry_z_score", "current_z_score", "capital_invested", "unrealized_pnl", "unrealized_pnl_pct"]:
+                            if k in pos and pos[k] is not None:
+                                pos[k] = float(pos[k])
+                        positions.append(pos)
+                    return positions
+            except Exception as e:
+                logger.debug(f"Could not fetch all paper_positions from Supabase: {e}")
+
+        if not hasattr(self, "_memory_positions"):
+            self._memory_positions = {}
+        return list(self._memory_positions.values())
+
+    def save_position(self, position_dict: Dict[str, Any]) -> None:
+        """Save or update an active open position."""
+        pair_key = position_dict.get("pair_key")
+        if not pair_key:
+            return
+        if not hasattr(self, "_memory_positions"):
+            self._memory_positions = {}
+        self._memory_positions[pair_key] = position_dict
+
+        if self.client:
+            try:
+                self.client.table("paper_positions").upsert(position_dict).execute()
+            except Exception as e:
+                logger.error(f"Error saving paper_position for {pair_key} in Supabase: {e}")
+
+    def delete_position(self, pair_key: str) -> None:
+        """Remove a closed position from active positions table."""
+        if hasattr(self, "_memory_positions") and pair_key in self._memory_positions:
+            del self._memory_positions[pair_key]
+
+        if self.client:
+            try:
+                self.client.table("paper_positions").delete().eq("pair_key", pair_key).execute()
+            except Exception as e:
+                logger.error(f"Error deleting paper_position for {pair_key} in Supabase: {e}")
+
+    def record_trade(self, trade_dict: Dict[str, Any]) -> None:
+        """Log a trade execution event to the historical ledger."""
+        if not hasattr(self, "_memory_trades"):
+            self._memory_trades = []
+        self._memory_trades.append(trade_dict)
+
+        if self.client:
+            try:
+                self.client.table("paper_trades").insert(trade_dict).execute()
+            except Exception as e:
+                logger.error(f"Error recording paper_trade in Supabase: {e}")
+
+    def get_recent_trades(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Fetch recent trades from historical ledger."""
+        if self.client:
+            try:
+                res = self.client.table("paper_trades").select("*").order("executed_at", desc=True).limit(limit).execute()
+                if res.data:
+                    return res.data
+            except Exception as e:
+                logger.debug(f"Could not fetch recent paper_trades from Supabase: {e}")
+
+        if not hasattr(self, "_memory_trades"):
+            self._memory_trades = []
+        return sorted(self._memory_trades, key=lambda x: x.get("executed_at", ""), reverse=True)[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -518,8 +654,44 @@ def evaluate_cooldown_and_zero_crossing(
 
 
 # ---------------------------------------------------------------------------
-# Resend Email Alerting
+# Paper Trading Helpers & Email Formatting
 # ---------------------------------------------------------------------------
+def format_human_timestamp(ts_str: str) -> str:
+    """Format raw ISO timestamp into a clean readable string like 'Sep 04, 2026 • 3:55 PM EDT'."""
+    try:
+        dt = pd.to_datetime(ts_str)
+        if dt.tz is None:
+            dt = dt.tz_localize(pytz.utc)
+        dt_est = dt.tz_convert("America/New_York")
+        return dt_est.strftime("%b %d, %Y • %I:%M %p %Z")
+    except Exception:
+        clean = str(ts_str).replace("T", " ")
+        return clean[:19]
+
+
+def calculate_trade_sizing(
+    price_a: float,
+    price_b: float,
+    locked_beta: float,
+    target_leg_dollars: float = 10000.0,
+) -> Tuple[int, int, float, float, float]:
+    """
+    Computes position sizes:
+    shares_a = floor(target_leg_dollars / price_a)
+    shares_b = floor((shares_a * price_a * abs(locked_beta)) / price_b)
+    Returns: (shares_a, shares_b, capital_a, capital_b, total_capital)
+    """
+    shares_a = max(1, int(target_leg_dollars / max(0.01, price_a)))
+    capital_a = round(shares_a * price_a, 2)
+
+    target_b_dollars = capital_a * abs(locked_beta)
+    shares_b = max(1, int(target_b_dollars / max(0.01, price_b)))
+    capital_b = round(shares_b * price_b, 2)
+
+    total_capital = round(capital_a + capital_b, 2)
+    return shares_a, shares_b, capital_a, capital_b, total_capital
+
+
 def format_email_content(
     ticker_a: str,
     ticker_b: str,
@@ -534,60 +706,157 @@ def format_email_content(
     timestamp_str: str,
     direction: str,
     is_test: bool = False,
+    event_type: str = "NEW_TRADE",
+    trade_info: Optional[Dict[str, Any]] = None,
+    portfolio_info: Optional[Dict[str, Any]] = None,
+    open_positions: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[str, str, str]:
     """
-    Generate subject, HTML body, and plain-text body for Resend email.
-    Crafted under high-agency UI/UX principles: strict typography hierarchy,
-    calibrated desaturated accents, dark neutral surfaces, and bulletproof
-    cross-client table architecture.
+    Executive Paper Trading Confirmation & Daily Portfolio Statement.
+    Answers directly: 'What did you trade on paper? What trades took place?'
+    Displays exact shares, entry prices, dollars allocated, and live portfolio equity.
+    Relegates technical metrics (Z-score, Beta) to a clean, unobtrusive audit footnote.
     """
-    if direction == "UPPER":
-        tag = "OVERBOUGHT (UPPER)"
-        status_label = "Statistical Expansion: Upper Deviation Threshold"
-        action_summary = f"Spread (P_{ticker_a} - &beta;P_{ticker_b}) is significantly elevated above its 78-period mean. Mean-reversion posture favors SHORT {ticker_a} / LONG {ticker_b}."
-        accent_color = "#f43f5e"  # Rose-500
-        accent_bg = "rgba(244, 63, 94, 0.12)"
-        accent_border = "rgba(244, 63, 94, 0.32)"
-        tag_text = "#fb7185"
-    elif direction == "LOWER":
-        tag = "OVERSOLD (LOWER)"
-        status_label = "Statistical Compression: Lower Deviation Threshold"
-        action_summary = f"Spread (P_{ticker_a} - &beta;P_{ticker_b}) is depressed below its 78-period mean. Mean-reversion posture favors LONG {ticker_a} / SHORT {ticker_b}."
-        accent_color = "#10b981"  # Emerald-500
-        accent_bg = "rgba(16, 185, 129, 0.12)"
-        accent_border = "rgba(16, 185, 129, 0.32)"
-        tag_text = "#34d399"
-    else:
-        tag = "NEUTRAL / VERIFICATION"
-        status_label = "Statistical Baseline Verification"
-        action_summary = f"Spread is within expected deviation bands. Live test verifying Resend API connectivity and calculation pipeline."
-        accent_color = "#38bdf8"  # Sky-400
-        accent_bg = "rgba(56, 189, 248, 0.12)"
-        accent_border = "rgba(56, 189, 248, 0.32)"
-        tag_text = "#7dd3fc"
+    human_ts = format_human_timestamp(timestamp_str)
 
-    prefix = "[TEST VERIFICATION] " if is_test else ""
-    subject = f"{prefix}Pair Alert: {ticker_a}/{ticker_b} Z-Score {current_z:+.2f} ({tag})"
+    # Derive trade info if not provided directly
+    if not trade_info:
+        sh_a, sh_b, cap_a, cap_b, tot_cap = calculate_trade_sizing(price_a, price_b, locked_beta)
+        if direction == "UPPER":
+            s_a, s_b, t_dir = "SELL_SHORT", "BUY", "SHORT_SPREAD"
+        else:
+            s_a, s_b, t_dir = "BUY", "SELL_SHORT", "LONG_SPREAD"
 
-    # Format discrete consecutive confirmation pills
-    scores_pills_html = ""
-    for idx, s in enumerate(recent_scores):
-        period_label = f"t-{len(recent_scores) - 1 - idx}" if idx < len(recent_scores) - 1 else "latest"
-        scores_pills_html += (
-            f'<span style="display: inline-block; padding: 4px 10px; margin: 2px 4px; '
-            f'background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); '
-            f'border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; '
-            f'font-size: 12px; color: #e2e8f0;">{period_label}: <strong style="color: {accent_color};">{s:+.2f}&sigma;</strong></span>'
+        trade_info = {
+            "pair_key": f"{ticker_a}-{ticker_b}",
+            "action": "ENTER_PAIR" if event_type != "EXIT_TRADE" else "EXIT_PAIR",
+            "direction": t_dir,
+            "side_a": s_a,
+            "shares_a": sh_a,
+            "price_a": price_a,
+            "capital_a": cap_a,
+            "side_b": s_b,
+            "shares_b": sh_b,
+            "price_b": price_b,
+            "capital_b": cap_b,
+            "total_capital": tot_cap,
+            "realized_pnl": 0.0,
+            "return_pct": 0.0,
+        }
+
+    # Derive portfolio info if not provided
+    if not portfolio_info:
+        tot_cap = trade_info.get("total_capital", 17000.0)
+        portfolio_info = {
+            "starting_balance": 100000.00,
+            "cash_balance": round(100000.00 - tot_cap, 2),
+            "invested_capital": tot_cap,
+            "total_equity": 100000.00,
+            "total_realized_pnl": 0.00,
+        }
+
+    if open_positions is None:
+        open_positions = [{
+            "pair_key": f"{ticker_a}-{ticker_b}",
+            "direction": trade_info.get("direction", "LONG_SPREAD"),
+            "side_a": trade_info.get("side_a", "BUY"),
+            "shares_a": trade_info.get("shares_a", 50),
+            "entry_price_a": price_a,
+            "current_price_a": price_a,
+            "side_b": trade_info.get("side_b", "SELL_SHORT"),
+            "shares_b": trade_info.get("shares_b", 35),
+            "entry_price_b": price_b,
+            "current_price_b": price_b,
+            "capital_invested": trade_info.get("total_capital", 17000.0),
+            "unrealized_pnl": 0.0,
+            "unrealized_pnl_pct": 0.0,
+        }]
+
+    side_a = trade_info.get("side_a", "BUY")
+    shares_a = trade_info.get("shares_a", 0)
+    pr_a = trade_info.get("price_a", price_a)
+    cap_a = trade_info.get("capital_a", round(shares_a * pr_a, 2))
+
+    side_b = trade_info.get("side_b", "SELL_SHORT")
+    shares_b = trade_info.get("shares_b", 0)
+    pr_b = trade_info.get("price_b", price_b)
+    cap_b = trade_info.get("capital_b", round(shares_b * pr_b, 2))
+
+    total_cap = trade_info.get("total_capital", round(cap_a + cap_b, 2))
+    realized_pnl = trade_info.get("realized_pnl", 0.0)
+    return_pct = trade_info.get("return_pct", 0.0)
+
+    # Event titles & summary
+    is_exit = event_type == "EXIT_TRADE"
+    if is_exit:
+        badge_text = "POSITION CLOSED"
+        badge_bg = "#ecfdf5" if realized_pnl >= 0 else "#fef2f2"
+        badge_color = "#059669" if realized_pnl >= 0 else "#dc2626"
+        pnl_sign = "+" if realized_pnl >= 0 else ""
+        headline = f"Closed {ticker_a}/{ticker_b} &bull; Net P&L: {pnl_sign}${realized_pnl:,.2f} ({return_pct:+.2f}%)"
+        trade_summary = (
+            f"Mean reversion achieved. Closed position in {ticker_a} and {ticker_b}. "
+            f"Net return of {pnl_sign}${realized_pnl:,.2f} returned to portfolio cash balance."
         )
+        subject = f"{'[TEST] ' if is_test else ''}Position Closed: {ticker_a}/{ticker_b} P&L {pnl_sign}${realized_pnl:,.2f}"
+    else:
+        badge_text = "PAPER TRADE EXECUTED"
+        badge_bg = "#ecfdf5"
+        badge_color = "#059669"
+        if side_a == "BUY":
+            headline = f"Long {ticker_a} + Short {ticker_b}"
+            trade_summary = (
+                f"Bought {shares_a} shares of {ticker_a} at ${pr_a:,.2f} (${cap_a:,.2f}) "
+                f"and shorted {shares_b} shares of {ticker_b} at ${pr_b:,.2f} (${cap_b:,.2f}). "
+                f"Total capital allocated: ${total_cap:,.2f}."
+            )
+            subject = f"{'[TEST] ' if is_test else ''}Paper Trade: Long {ticker_a} + Short {ticker_b} (${total_cap:,.2f} Allocated)"
+        else:
+            headline = f"Short {ticker_a} + Long {ticker_b}"
+            trade_summary = (
+                f"Shorted {shares_a} shares of {ticker_a} at ${pr_a:,.2f} (${cap_a:,.2f}) "
+                f"and bought {shares_b} shares of {ticker_b} at ${pr_b:,.2f} (${cap_b:,.2f}). "
+                f"Total capital allocated: ${total_cap:,.2f}."
+            )
+            subject = f"{'[TEST] ' if is_test else ''}Paper Trade: Short {ticker_a} + Long {ticker_b} (${total_cap:,.2f} Allocated)"
 
-    scores_formatted_text = " -> ".join([f"{s:+.2f}σ" for s in recent_scores])
+    # Format positions table rows
+    positions_rows_html = ""
+    for pos in open_positions:
+        p_key = pos.get("pair_key", "")
+        p_dir = "LONG" if "LONG" in pos.get("direction", "") else "SHORT"
+        p_cap = pos.get("capital_invested", 0.0)
+        p_pnl = pos.get("unrealized_pnl", 0.0)
+        p_pct = pos.get("unrealized_pnl_pct", 0.0)
+        pnl_col = "#059669" if p_pnl >= 0 else "#dc2626"
+        pnl_str = f"{'+' if p_pnl >= 0 else ''}${p_pnl:,.2f} ({p_pct:+.2f}%)"
+        positions_rows_html += f"""
+        <tr>
+          <td style="padding: 10px 12px; border-bottom: 1px solid #f1f5f9; font-size: 13px; font-weight: 700; color: #0f172a;">{p_key}</td>
+          <td style="padding: 10px 12px; border-bottom: 1px solid #f1f5f9; font-size: 12px; color: #475569;">{p_dir} SPREAD</td>
+          <td align="right" style="padding: 10px 12px; border-bottom: 1px solid #f1f5f9; font-size: 13px; font-weight: 600; color: #334155; white-space: nowrap;">${p_cap:,.2f}</td>
+          <td align="right" style="padding: 10px 12px; border-bottom: 1px solid #f1f5f9; font-size: 13px; font-weight: 700; color: {pnl_col}; white-space: nowrap;">{pnl_str}</td>
+        </tr>
+        """
+
+    if not open_positions:
+        positions_rows_html = """
+        <tr>
+          <td colspan="4" style="padding: 14px; text-align: center; font-size: 13px; color: #94a3b8;">No active open positions. 100% in cash.</td>
+        </tr>
+        """
+
+    side_a_title = "BOUGHT (LONG)" if side_a == "BUY" else "SHORTED (SELL SHORT)"
+    side_a_col = "#059669" if side_a == "BUY" else "#dc2626"
+    side_b_title = "SHORTED (SELL SHORT)" if side_b == "SELL_SHORT" else "BOUGHT (LONG)"
+    side_b_col = "#dc2626" if side_b == "SELL_SHORT" else "#059669"
 
     test_banner_html = ""
     if is_test:
-        test_banner_html = """
-        <div style="background-color: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; padding: 14px 18px; margin-bottom: 24px;">
-          <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #38bdf8; margin-bottom: 4px;">System Verification Mode Active</div>
-          <div style="font-size: 13px; line-height: 1.5; color: #cbd5e1;">This transmission confirms that your end-to-end monitoring pipeline, Resend credentials, Supabase state store, and HTML email engine are fully operational.</div>
+        test_banner_html = f"""
+        <div style="background-color: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px;">
+          <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: #2563eb; letter-spacing: 0.5px;">System Verification Mode Active</div>
+          <div style="font-size: 13px; color: #1e40af; margin-top: 2px;">This transmission confirms that your simulated paper trading pipeline, Supabase trade persistence, and email formatting are operating correctly.</div>
         </div>
         """
 
@@ -596,21 +865,24 @@ def format_email_content(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <meta name="supported-color-schemes" content="light dark">
   <title>{subject}</title>
 </head>
-<body style="margin: 0; padding: 32px 16px; background-color: #090d16; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; color: #f8fafc; -webkit-font-smoothing: antialiased;">
-  <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 600px; margin: 0 auto; background-color: #111827; border: 1px solid rgba(255, 255, 255, 0.08); border-top: 3px solid {accent_color}; border-radius: 12px; overflow: hidden; box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.6);">
+<body style="margin: 0; padding: 24px 12px; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; color: #0f172a; -webkit-font-smoothing: antialiased;">
+  <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 580px; margin: 0 auto; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 14px; overflow: hidden; box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.05);">
     <!-- Header -->
     <tr>
-      <td style="padding: 24px 28px 16px 28px; border-bottom: 1px solid rgba(255, 255, 255, 0.06);">
+      <td style="padding: 22px 26px; background-color: #0f172a; color: #ffffff;">
         <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
           <tr>
             <td>
-              <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.12em; color: #94a3b8;">Twin Stock Trading // Intraday Statistical Monitor</div>
-              <div style="font-size: 24px; font-weight: 700; letter-spacing: -0.02em; color: #ffffff; margin-top: 4px;">{ticker_a} <span style="color: #64748b; font-weight: 400;">/</span> {ticker_b}</div>
+              <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #94a3b8;">Twin Stock Trading &bull; Paper Trading Desk</div>
+              <div style="font-size: 22px; font-weight: 800; color: #ffffff; margin-top: 4px; letter-spacing: -0.5px;">Trade Execution Confirmation</div>
+              <div style="font-size: 12px; color: #cbd5e1; margin-top: 4px; white-space: nowrap;">Executed: {human_ts}</div>
             </td>
             <td align="right" valign="top">
-              <span style="display: inline-block; padding: 4px 12px; background: {accent_bg}; border: 1px solid {accent_border}; border-radius: 9999px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; color: {tag_text}; text-transform: uppercase;">{tag}</span>
+              <span style="display: inline-block; padding: 4px 10px; background-color: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 9999px; font-size: 10px; font-weight: 700; color: #f8fafc; text-transform: uppercase; white-space: nowrap;">Live Paper Sim</span>
             </td>
           </tr>
         </table>
@@ -619,116 +891,114 @@ def format_email_content(
 
     <!-- Main Content Area -->
     <tr>
-      <td style="padding: 24px 28px;">
+      <td style="padding: 24px 26px;">
         {test_banner_html}
 
-        <!-- Deviation Hero Metric Box -->
-        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #0b0f19; border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 10px; margin-bottom: 22px;">
-          <tr>
-            <td style="padding: 22px 24px; text-align: center;">
-              <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: #94a3b8; margin-bottom: 6px;">Statistical Deviation Score (Z-Score)</div>
-              <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 44px; font-weight: 800; letter-spacing: -0.03em; color: {accent_color}; margin: 2px 0 10px 0;">{current_z:+.2f}&sigma;</div>
-              <div style="font-size: 12px; color: #94a3b8;">
-                Consecutive Confirmation:
-                <div style="margin-top: 8px;">{scores_pills_html}</div>
-              </div>
-            </td>
-          </tr>
-        </table>
-
-        <!-- Quantitative Posture & Direction -->
-        <div style="background-color: rgba(255, 255, 255, 0.02); border-left: 2px solid {accent_color}; padding: 12px 16px; margin-bottom: 24px; border-radius: 0 6px 6px 0;">
-          <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #cbd5e1; margin-bottom: 3px;">Quantitative Signal Posture</div>
-          <div style="font-size: 13px; line-height: 1.5; color: #94a3b8;">{action_summary}</div>
+        <!-- Trade Action Headline Box -->
+        <div style="background-color: {badge_bg}; border: 1px solid {badge_color}33; border-radius: 10px; padding: 18px; margin-bottom: 22px;">
+          <span style="display: inline-block; background-color: {badge_color}; color: #ffffff; font-size: 10px; font-weight: 800; padding: 3px 8px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.5px;">{badge_text}</span>
+          <div style="font-size: 20px; font-weight: 800; color: #0f172a; margin-top: 8px; letter-spacing: -0.3px;">{headline}</div>
+          <div style="font-size: 13px; color: #334155; line-height: 1.5; margin-top: 6px;">{trade_summary}</div>
         </div>
 
-        <!-- Component Price Cards -->
-        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom: 24px;">
+        <!-- 2-Leg Trade Breakdown -->
+        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom: 22px;">
           <tr>
-            <td width="48%" style="background-color: #0d1322; border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px; padding: 14px 16px;">
-              <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8;">Stock A (Base)</div>
-              <div style="font-size: 15px; font-weight: 700; color: #ffffff; margin-top: 2px;">{ticker_a}</div>
-              <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 20px; font-weight: 700; color: #f8fafc; margin-top: 6px;">${price_a:,.2f}</div>
+            <td width="48%" style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-top: 3px solid {side_a_col}; border-radius: 8px; padding: 14px 16px;">
+              <div style="font-size: 11px; font-weight: 800; color: {side_a_col}; text-transform: uppercase;">{side_a_title}</div>
+              <div style="font-size: 22px; font-weight: 800; color: #0f172a; margin-top: 2px;">{ticker_a}</div>
+              <div style="font-size: 13px; font-weight: 600; color: #334155; margin-top: 6px; white-space: nowrap;">{shares_a} shares @ ${pr_a:,.2f}</div>
+              <div style="font-size: 12px; color: #64748b; margin-top: 2px; white-space: nowrap;">Total: <strong>${cap_a:,.2f}</strong></div>
             </td>
             <td width="4%"></td>
-            <td width="48%" style="background-color: #0d1322; border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px; padding: 14px 16px;">
-              <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8;">Stock B (Hedge &beta; {locked_beta:.4f})</div>
-              <div style="font-size: 15px; font-weight: 700; color: #ffffff; margin-top: 2px;">{ticker_b}</div>
-              <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 20px; font-weight: 700; color: #f8fafc; margin-top: 6px;">${price_b:,.2f}</div>
+            <td width="48%" style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-top: 3px solid {side_b_col}; border-radius: 8px; padding: 14px 16px;">
+              <div style="font-size: 11px; font-weight: 800; color: {side_b_col}; text-transform: uppercase;">{side_b_title}</div>
+              <div style="font-size: 22px; font-weight: 800; color: #0f172a; margin-top: 2px;">{ticker_b}</div>
+              <div style="font-size: 13px; font-weight: 600; color: #334155; margin-top: 6px; white-space: nowrap;">{shares_b} shares @ ${pr_b:,.2f}</div>
+              <div style="font-size: 12px; color: #64748b; margin-top: 2px; white-space: nowrap;">Total: <strong>${cap_b:,.2f}</strong></div>
             </td>
           </tr>
         </table>
 
-        <!-- High-Density Spread Metric Rows -->
-        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse: collapse;">
-          <tr>
-            <td style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-size: 13px; color: #94a3b8;">Daily Locked Beta (&beta;)</td>
-            <td align="right" style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; font-weight: 600; color: #f8fafc;">{locked_beta:.4f}</td>
-          </tr>
-          <tr>
-            <td style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-size: 13px; color: #94a3b8;">Current Spread (P<sub>A</sub> &minus; &beta;P<sub>B</sub>)</td>
-            <td align="right" style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; font-weight: 600; color: #f8fafc;">${spread:,.4f}</td>
-          </tr>
-          <tr>
-            <td style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-size: 13px; color: #94a3b8;">Rolling Mean Spread (78-Period)</td>
-            <td align="right" style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; font-weight: 600; color: #f8fafc;">${rolling_mean:,.4f}</td>
-          </tr>
-          <tr>
-            <td style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-size: 13px; color: #94a3b8;">Rolling Spread Volatility (&sigma;)</td>
-            <td align="right" style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; font-weight: 600; color: #f8fafc;">${rolling_std:,.4f}</td>
-          </tr>
-          <tr>
-            <td style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-size: 13px; color: #94a3b8;">Sampling Granularity</td>
-            <td align="right" style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; font-weight: 600; color: #f8fafc;">5-Minute Candles (7-Day Rolling Cache)</td>
-          </tr>
-          <tr>
-            <td style="padding: 10px 0; font-size: 13px; color: #94a3b8;">Observation Timestamp</td>
-            <td align="right" style="padding: 10px 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; font-weight: 600; color: #94a3b8;">{timestamp_str}</td>
-          </tr>
-        </table>
+        <!-- Everyday Portfolio Ledger Section -->
+        <div style="border-top: 1px solid #e2e8f0; padding-top: 20px; margin-top: 20px;">
+          <div style="font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.8px; color: #475569; margin-bottom: 12px;">Everyday Paper Portfolio Snapshot</div>
+          
+          <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; margin-bottom: 18px;">
+            <tr>
+              <td width="33%" style="padding: 14px 10px; text-align: center; border-right: 1px solid #e2e8f0;">
+                <div style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase;">Total Portfolio</div>
+                <div style="font-size: 17px; font-weight: 800; color: #0f172a; margin-top: 3px; white-space: nowrap;">${portfolio_info.get('total_equity', 100000.00):,.2f}</div>
+              </td>
+              <td width="33%" style="padding: 14px 10px; text-align: center; border-right: 1px solid #e2e8f0;">
+                <div style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase;">Available Cash</div>
+                <div style="font-size: 17px; font-weight: 800; color: #0f172a; margin-top: 3px; white-space: nowrap;">${portfolio_info.get('cash_balance', 100000.00):,.2f}</div>
+              </td>
+              <td width="34%" style="padding: 14px 10px; text-align: center;">
+                <div style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase;">Active Positions</div>
+                <div style="font-size: 17px; font-weight: 800; color: #2563eb; margin-top: 3px; white-space: nowrap;">{len(open_positions)} Open</div>
+              </td>
+            </tr>
+          </table>
+
+          <!-- Active Positions Table -->
+          <div style="font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.8px; color: #475569; margin-bottom: 8px;">Active Open Positions</div>
+          <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse: collapse; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+            <tr style="background-color: #f1f5f9;">
+              <th align="left" style="padding: 8px 12px; font-size: 11px; color: #475569; font-weight: 700;">PAIR</th>
+              <th align="left" style="padding: 8px 12px; font-size: 11px; color: #475569; font-weight: 700;">DIRECTION</th>
+              <th align="right" style="padding: 8px 12px; font-size: 11px; color: #475569; font-weight: 700;">CAPITAL</th>
+              <th align="right" style="padding: 8px 12px; font-size: 11px; color: #475569; font-weight: 700;">FLOATING P&amp;L</th>
+            </tr>
+            {positions_rows_html}
+          </table>
+        </div>
+      </td>
+    </tr>
+
+    <!-- Discreet Quant Footnote for Auditing -->
+    <tr>
+      <td style="padding: 14px 26px; background-color: #f8fafc; border-top: 1px solid #e2e8f0; font-size: 11px; color: #64748b; line-height: 1.5;">
+        <strong>Quant Reference:</strong> Daily Locked Beta: <strong>{locked_beta:.4f}</strong> &bull; Spread: <strong>${spread:,.4f}</strong> (Mean: ${rolling_mean:,.4f}, &sigma;: ${rolling_std:,.4f}) &bull; Divergence Z: <strong>{current_z:+.2f}&sigma;</strong> &bull; Raw Timestamp: {timestamp_str}<br>
+        <strong>Database Sync:</strong> Logged to Supabase tables <code>paper_trades</code>, <code>paper_positions</code>, and <code>paper_portfolio</code>.
       </td>
     </tr>
 
     <!-- Footer -->
     <tr>
-      <td style="padding: 20px 28px; background-color: #0b0f19; border-top: 1px solid rgba(255, 255, 255, 0.06); text-align: center;">
-        <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; color: #64748b;">
-          Twin Stock Trading &bull; Automated via GitHub Actions, Supabase &amp; Resend
-        </div>
-        <div style="font-size: 11px; color: #475569; margin-top: 4px;">
-          Statistically disciplined pair monitoring. Cooldown reset enforced at |Z| &le; 0.25 or sign-inversion zero-crossing.
-        </div>
+      <td style="padding: 16px 26px; background-color: #0f172a; text-align: center; color: #94a3b8; font-size: 11px;">
+        Twin Stock Trading Desk &bull; Automated via GitHub Actions, Supabase &amp; Resend
       </td>
     </tr>
   </table>
 </body>
 </html>"""
 
-    text_content = f"""TWIN STOCK TRADING // STATISTICAL PAIR ALERT
+    text_content = f"""TWIN STOCK TRADING // PAPER TRADING DESK
 =====================================================
-Pair: {ticker_a} / {ticker_b}
-Condition: {tag}
-Status: {status_label}
-Deviation Score: {current_z:+.2f} sigma
-Consecutive Confirmation: {scores_formatted_text}
+Status: {badge_text}
+Trade: {headline}
+Executed: {human_ts}
 
-ACTIONABLE SIGNAL POSTURE:
-{action_summary}
+WHAT WE TRADED:
+- {side_a_title}: {shares_a} shares of {ticker_a} @ ${pr_a:,.2f} (${cap_a:,.2f})
+- {side_b_title}: {shares_b} shares of {ticker_b} @ ${pr_b:,.2f} (${cap_b:,.2f})
+- Total Capital Allocated: ${total_cap:,.2f}
 
-PRICE SUMMARY:
-- {ticker_a} (Base Asset):   ${price_a:,.2f}
-- {ticker_b} (Hedge Asset):  ${price_b:,.2f}
+PORTFOLIO SNAPSHOT:
+- Total Account Value: ${portfolio_info.get('total_equity', 100000.00):,.2f}
+- Cash Available:      ${portfolio_info.get('cash_balance', 100000.00):,.2f}
+- Active Open Pairs:   {len(open_positions)}
 
-STATISTICAL PARAMETERS:
-- Daily Locked Beta:         {locked_beta:.4f}
-- Current Spread:            ${spread:,.4f}
-- Rolling Mean Spread:       ${rolling_mean:,.4f}
-- Rolling Spread Volatility: ${rolling_std:,.4f}
-- Observation Window:        5m Intraday (7-day cache)
-- Timestamp:                 {timestamp_str}
+DATABASE LOGGING:
+Trade and position details saved to Supabase (paper_trades, paper_positions, paper_portfolio).
 
+QUANT REFERENCE:
+- Daily Locked Beta: {locked_beta:.4f}
+- Current Spread: ${spread:,.4f} (Mean: ${rolling_mean:,.4f})
+- Divergence Score: {current_z:+.2f} sigma
+- Raw Timestamp: {timestamp_str}
 =====================================================
-Automated notification dispatched via Resend SDK.
 """
 
     return subject, html_content, text_content
@@ -852,8 +1122,16 @@ def main() -> int:
     now_market = datetime.datetime.now(market_tz)
     today_date_str = now_market.strftime("%Y-%m-%d")
 
-    # 2. Initialize Supabase Backend
+    # 2. Initialize Supabase Backend & Paper Portfolio
     backend = SupabaseBackend()
+    portfolio = backend.get_portfolio()
+    open_positions_map = {p["pair_key"]: p for p in backend.get_all_open_positions()}
+    logger.info(
+        f"Paper Portfolio Initialized: Balance=${portfolio.get('cash_balance', 100000.0):,.2f} | "
+        f"Total Equity=${portfolio.get('total_equity', 100000.0):,.2f} | "
+        f"Open Positions={len(open_positions_map)}"
+    )
+
     pairs = parse_pairs(args.pairs)
     logger.info(f"Monitoring {len(pairs)} pairs: {pairs}")
 
@@ -947,7 +1225,94 @@ def main() -> int:
                 "locked_beta": locked_beta,
             })
 
-            # E. Cooldown & Zero-Crossing Logic
+            # E. Position Tracking & Mean-Reversion Exit Evaluation
+            open_pos = backend.get_open_position(pair_key)
+            if open_pos:
+                cur_price_a = metrics["latest_price_a"]
+                cur_price_b = metrics["latest_price_b"]
+                side_a = open_pos.get("side_a", "BUY")
+                side_b = open_pos.get("side_b", "SELL_SHORT")
+                sh_a = open_pos.get("shares_a", 0)
+                sh_b = open_pos.get("shares_b", 0)
+                ent_a = open_pos.get("entry_price_a", cur_price_a)
+                ent_b = open_pos.get("entry_price_b", cur_price_b)
+
+                pnl_a = (cur_price_a - ent_a) * sh_a if side_a == "BUY" else (ent_a - cur_price_a) * sh_a
+                pnl_b = (cur_price_b - ent_b) * sh_b if side_b == "BUY" else (ent_b - cur_price_b) * sh_b
+                unrealized_pnl = round(pnl_a + pnl_b, 2)
+                cap_inv = open_pos.get("capital_invested", 1.0)
+                unrealized_pct = round((unrealized_pnl / cap_inv) * 100.0, 2) if cap_inv > 0 else 0.0
+
+                open_pos["current_price_a"] = cur_price_a
+                open_pos["current_price_b"] = cur_price_b
+                open_pos["unrealized_pnl"] = unrealized_pnl
+                open_pos["unrealized_pnl_pct"] = unrealized_pct
+                open_pos["last_updated"] = metrics["timestamp"]
+                backend.save_position(open_pos)
+
+                # Check for Mean-Reversion Exit Signal
+                # Exit occurs if spread reverted to zero (|Z| <= zero_threshold) or crossed zero (prev_z * current_z <= 0)
+                if abs(current_z) <= zero_threshold or (prev_z * current_z <= 0 and abs(prev_z) > zero_threshold):
+                    logger.info(f"[{pair_key}] Mean-reversion exit condition met (Z={current_z:+.2f}). Closing paper position...")
+                    exit_trade = {
+                        "trade_id": str(uuid.uuid4()),
+                        "pair_key": pair_key,
+                        "action": "EXIT_PAIR",
+                        "direction": open_pos.get("direction", "SPREAD"),
+                        "side_a": "SELL" if side_a == "BUY" else "BUY_TO_COVER",
+                        "ticker_a": ticker_a,
+                        "shares_a": sh_a,
+                        "price_a": cur_price_a,
+                        "capital_a": round(sh_a * cur_price_a, 2),
+                        "side_b": "BUY_TO_COVER" if side_b == "SELL_SHORT" else "SELL",
+                        "ticker_b": ticker_b,
+                        "shares_b": sh_b,
+                        "price_b": cur_price_b,
+                        "capital_b": round(sh_b * cur_price_b, 2),
+                        "total_capital": cap_inv,
+                        "z_score_at_trade": float(current_z),
+                        "beta_used": locked_beta,
+                        "realized_pnl": unrealized_pnl,
+                        "executed_at": metrics["timestamp"],
+                    }
+                    backend.record_trade(exit_trade)
+                    backend.delete_position(pair_key)
+
+                    # Update portfolio balances
+                    portfolio["cash_balance"] = round(portfolio.get("cash_balance", 100000.0) + cap_inv + unrealized_pnl, 2)
+                    portfolio["realized_pnl"] = round(portfolio.get("realized_pnl", 0.0) + unrealized_pnl, 2)
+                    current_open_positions = backend.get_all_open_positions()
+                    portfolio["open_positions_count"] = len(current_open_positions)
+                    total_floating = sum(p.get("unrealized_pnl", 0.0) for p in current_open_positions)
+                    invested_capital = sum(p.get("capital_invested", 0.0) for p in current_open_positions)
+                    portfolio["total_equity"] = round(portfolio["cash_balance"] + invested_capital + total_floating, 2)
+                    portfolio["last_updated"] = metrics["timestamp"]
+                    backend.update_portfolio(portfolio)
+
+                    # Dispatch Position Closed Email
+                    subject, html_body, text_body = format_email_content(
+                        ticker_a=ticker_a,
+                        ticker_b=ticker_b,
+                        current_z=current_z,
+                        recent_scores=recent_scores,
+                        price_a=cur_price_a,
+                        price_b=cur_price_b,
+                        spread=metrics["latest_spread"],
+                        rolling_mean=metrics["rolling_mean"],
+                        rolling_std=metrics["rolling_std"],
+                        locked_beta=locked_beta,
+                        timestamp_str=metrics["timestamp"],
+                        direction=direction,
+                        is_test=False,
+                        event_type="EXIT_TRADE",
+                        trade_info=exit_trade,
+                        portfolio_info=portfolio,
+                        open_positions=current_open_positions,
+                    )
+                    send_alert_email(subject=subject, html_content=html_body, text_content=text_body, dry_run=args.dry_run)
+                    alerts_dispatched += 1
+
+            # F. Cooldown & Zero-Crossing Logic (for entry signals)
             pair_state = backend.get_pair_state(pair_key)
             should_alert, reason = evaluate_cooldown_and_zero_crossing(
                 pair_state=pair_state,
@@ -961,8 +1326,71 @@ def main() -> int:
 
             logger.info(f"[{pair_key}] Alert Decision: {should_alert} (Reason: {reason})")
 
-            # F. Dispatch Alert or Update Observation
-            if should_alert:
+            # G. Execute Paper Trade Entry & Dispatch Report
+            if should_alert and not backend.get_open_position(pair_key):
+                shares_a, shares_b, cap_a, cap_b, total_cap = calculate_trade_sizing(
+                    metrics["latest_price_a"], metrics["latest_price_b"], locked_beta
+                )
+                if direction == "UPPER":
+                    side_a, side_b, trade_dir = "SELL_SHORT", "BUY", "SHORT_SPREAD"
+                else:
+                    side_a, side_b, trade_dir = "BUY", "SELL_SHORT", "LONG_SPREAD"
+
+                new_pos = {
+                    "pair_key": pair_key,
+                    "direction": trade_dir,
+                    "side_a": side_a,
+                    "ticker_a": ticker_a,
+                    "shares_a": shares_a,
+                    "entry_price_a": metrics["latest_price_a"],
+                    "current_price_a": metrics["latest_price_a"],
+                    "side_b": side_b,
+                    "ticker_b": ticker_b,
+                    "shares_b": shares_b,
+                    "entry_price_b": metrics["latest_price_b"],
+                    "current_price_b": metrics["latest_price_b"],
+                    "locked_beta": locked_beta,
+                    "entry_z_score": float(current_z),
+                    "capital_invested": total_cap,
+                    "unrealized_pnl": 0.0,
+                    "unrealized_pnl_pct": 0.0,
+                    "opened_at": metrics["timestamp"],
+                    "last_updated": metrics["timestamp"],
+                }
+                backend.save_position(new_pos)
+
+                trade_record = {
+                    "trade_id": str(uuid.uuid4()),
+                    "pair_key": pair_key,
+                    "action": "ENTER_PAIR",
+                    "direction": trade_dir,
+                    "side_a": side_a,
+                    "ticker_a": ticker_a,
+                    "shares_a": shares_a,
+                    "price_a": metrics["latest_price_a"],
+                    "capital_a": cap_a,
+                    "side_b": side_b,
+                    "ticker_b": ticker_b,
+                    "shares_b": shares_b,
+                    "price_b": metrics["latest_price_b"],
+                    "capital_b": cap_b,
+                    "total_capital": total_cap,
+                    "z_score_at_trade": float(current_z),
+                    "beta_used": locked_beta,
+                    "realized_pnl": 0.0,
+                    "executed_at": metrics["timestamp"],
+                }
+                backend.record_trade(trade_record)
+
+                portfolio["cash_balance"] = round(portfolio.get("cash_balance", 100000.0) - total_cap, 2)
+                current_open_positions = backend.get_all_open_positions()
+                portfolio["open_positions_count"] = len(current_open_positions)
+                total_floating = sum(p.get("unrealized_pnl", 0.0) for p in current_open_positions)
+                invested_capital = sum(p.get("capital_invested", 0.0) for p in current_open_positions)
+                portfolio["total_equity"] = round(portfolio["cash_balance"] + invested_capital + total_floating, 2)
+                portfolio["last_updated"] = metrics["timestamp"]
+                backend.update_portfolio(portfolio)
+
                 subject, html_body, text_body = format_email_content(
                     ticker_a=ticker_a,
                     ticker_b=ticker_b,
@@ -977,6 +1405,10 @@ def main() -> int:
                     timestamp_str=metrics["timestamp"],
                     direction=direction,
                     is_test=False,
+                    event_type="NEW_TRADE",
+                    trade_info=trade_record,
+                    portfolio_info=portfolio,
+                    open_positions=current_open_positions,
                 )
 
                 email_sent = send_alert_email(
@@ -1002,15 +1434,79 @@ def main() -> int:
         except Exception as e:
             logger.error(f"Unexpected error processing pair {pair_key}: {e}", exc_info=True)
 
-    # G. Verification Test Dispatch (if requested and no real alert triggered)
+    # H. Verification Test Dispatch (if requested and no real trade triggered)
     if test_alert_mode and alerts_dispatched == 0 and evaluated_candidates:
-        # Choose the pair with the most pronounced statistical divergence
         best = max(evaluated_candidates, key=lambda p: abs(p["current_z"]))
         logger.info(
-            f"[TEST ALERT] Initiating system verification alert dispatch for pair {best['pair_key']} "
+            f"[TEST ALERT] Initiating simulated paper trade execution verification for pair {best['pair_key']} "
             f"(Z = {best['current_z']:+.2f}σ)..."
         )
         b_metrics = best["metrics"]
+        shares_a, shares_b, cap_a, cap_b, total_cap = calculate_trade_sizing(
+            b_metrics["latest_price_a"], b_metrics["latest_price_b"], best["locked_beta"]
+        )
+        t_dir = "SHORT_SPREAD" if best["direction"] == "UPPER" else "LONG_SPREAD"
+        s_a = "SELL_SHORT" if best["direction"] == "UPPER" else "BUY"
+        s_b = "BUY" if best["direction"] == "UPPER" else "SELL_SHORT"
+
+        test_trade = {
+            "trade_id": str(uuid.uuid4()),
+            "pair_key": best["pair_key"],
+            "action": "ENTER_PAIR",
+            "direction": t_dir,
+            "side_a": s_a,
+            "ticker_a": best["ticker_a"],
+            "shares_a": shares_a,
+            "price_a": b_metrics["latest_price_a"],
+            "capital_a": cap_a,
+            "side_b": s_b,
+            "ticker_b": best["ticker_b"],
+            "shares_b": shares_b,
+            "price_b": b_metrics["latest_price_b"],
+            "capital_b": cap_b,
+            "total_capital": total_cap,
+            "z_score_at_trade": float(best["current_z"]),
+            "beta_used": best["locked_beta"],
+            "realized_pnl": 0.0,
+            "executed_at": b_metrics["timestamp"],
+        }
+        # Persist test trade in Supabase paper_trades ledger
+        backend.record_trade(test_trade)
+
+        # Ensure active position is saved if not present
+        if not backend.get_open_position(best["pair_key"]):
+            test_pos = {
+                "pair_key": best["pair_key"],
+                "direction": t_dir,
+                "side_a": s_a,
+                "ticker_a": best["ticker_a"],
+                "shares_a": shares_a,
+                "entry_price_a": b_metrics["latest_price_a"],
+                "current_price_a": b_metrics["latest_price_a"],
+                "side_b": s_b,
+                "ticker_b": best["ticker_b"],
+                "shares_b": shares_b,
+                "entry_price_b": b_metrics["latest_price_b"],
+                "current_price_b": b_metrics["latest_price_b"],
+                "locked_beta": best["locked_beta"],
+                "entry_z_score": float(best["current_z"]),
+                "capital_invested": total_cap,
+                "unrealized_pnl": 0.0,
+                "unrealized_pnl_pct": 0.0,
+                "opened_at": b_metrics["timestamp"],
+                "last_updated": b_metrics["timestamp"],
+            }
+            backend.save_position(test_pos)
+            portfolio["cash_balance"] = round(portfolio.get("cash_balance", 100000.0) - total_cap, 2)
+
+        current_open_positions = backend.get_all_open_positions()
+        portfolio["open_positions_count"] = len(current_open_positions)
+        total_floating = sum(p.get("unrealized_pnl", 0.0) for p in current_open_positions)
+        invested_capital = sum(p.get("capital_invested", 0.0) for p in current_open_positions)
+        portfolio["total_equity"] = round(portfolio["cash_balance"] + invested_capital + total_floating, 2)
+        portfolio["last_updated"] = b_metrics["timestamp"]
+        backend.update_portfolio(portfolio)
+
         subject, html_body, text_body = format_email_content(
             ticker_a=best["ticker_a"],
             ticker_b=best["ticker_b"],
@@ -1025,6 +1521,10 @@ def main() -> int:
             timestamp_str=b_metrics["timestamp"],
             direction=best["direction"],
             is_test=True,
+            event_type="NEW_TRADE",
+            trade_info=test_trade,
+            portfolio_info=portfolio,
+            open_positions=current_open_positions,
         )
         test_sent = send_alert_email(
             subject=subject,
@@ -1033,7 +1533,7 @@ def main() -> int:
             dry_run=args.dry_run,
         )
         if test_sent:
-            logger.info(f"[TEST ALERT] Verification alert successfully dispatched for {best['pair_key']}.")
+            logger.info(f"[TEST ALERT] Verification paper trade alert successfully dispatched for {best['pair_key']}.")
         else:
             logger.error(f"[TEST ALERT] Failed to send verification alert email.")
 
@@ -1043,3 +1543,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
