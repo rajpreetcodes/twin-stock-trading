@@ -747,7 +747,7 @@ def send_alert_email(
 
     api_key = os.environ.get("RESEND_API_KEY")
     to_addr = os.environ.get("ALERT_EMAIL_TO")
-    from_addr = os.environ.get("ALERT_EMAIL_FROM", "onboarding@resend.dev")
+    from_addr = (os.environ.get("ALERT_EMAIL_FROM") or "").strip() or "onboarding@resend.dev"
 
     if not api_key:
         logger.error("RESEND_API_KEY is not configured. Email suppressed.")
