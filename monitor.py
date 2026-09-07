@@ -533,103 +533,202 @@ def format_email_content(
     locked_beta: float,
     timestamp_str: str,
     direction: str,
+    is_test: bool = False,
 ) -> Tuple[str, str, str]:
-    """Generate subject, HTML body, and plain-text body for Resend email."""
-    tag = "OVERBOUGHT (Upper)" if direction == "UPPER" else "OVERSOLD (Lower)"
-    badge_color = "#dc2626" if direction == "UPPER" else "#2563eb"
-    subject = f"🚨 Pair Alert: {ticker_a}/{ticker_b} Z-Score {current_z:+.2f} ({tag})"
-    scores_formatted = " ➔ ".join([f"{s:+.2f}σ" for s in recent_scores])
+    """
+    Generate subject, HTML body, and plain-text body for Resend email.
+    Crafted under high-agency UI/UX principles: strict typography hierarchy,
+    calibrated desaturated accents, dark neutral surfaces, and bulletproof
+    cross-client table architecture.
+    """
+    if direction == "UPPER":
+        tag = "OVERBOUGHT (UPPER)"
+        status_label = "Statistical Expansion: Upper Deviation Threshold"
+        action_summary = f"Spread (P_{ticker_a} - &beta;P_{ticker_b}) is significantly elevated above its 78-period mean. Mean-reversion posture favors SHORT {ticker_a} / LONG {ticker_b}."
+        accent_color = "#f43f5e"  # Rose-500
+        accent_bg = "rgba(244, 63, 94, 0.12)"
+        accent_border = "rgba(244, 63, 94, 0.32)"
+        tag_text = "#fb7185"
+    elif direction == "LOWER":
+        tag = "OVERSOLD (LOWER)"
+        status_label = "Statistical Compression: Lower Deviation Threshold"
+        action_summary = f"Spread (P_{ticker_a} - &beta;P_{ticker_b}) is depressed below its 78-period mean. Mean-reversion posture favors LONG {ticker_a} / SHORT {ticker_b}."
+        accent_color = "#10b981"  # Emerald-500
+        accent_bg = "rgba(16, 185, 129, 0.12)"
+        accent_border = "rgba(16, 185, 129, 0.32)"
+        tag_text = "#34d399"
+    else:
+        tag = "NEUTRAL / VERIFICATION"
+        status_label = "Statistical Baseline Verification"
+        action_summary = f"Spread is within expected deviation bands. Live test verifying Resend API connectivity and calculation pipeline."
+        accent_color = "#38bdf8"  # Sky-400
+        accent_bg = "rgba(56, 189, 248, 0.12)"
+        accent_border = "rgba(56, 189, 248, 0.32)"
+        tag_text = "#7dd3fc"
+
+    prefix = "[TEST VERIFICATION] " if is_test else ""
+    subject = f"{prefix}Pair Alert: {ticker_a}/{ticker_b} Z-Score {current_z:+.2f} ({tag})"
+
+    # Format discrete consecutive confirmation pills
+    scores_pills_html = ""
+    for idx, s in enumerate(recent_scores):
+        period_label = f"t-{len(recent_scores) - 1 - idx}" if idx < len(recent_scores) - 1 else "latest"
+        scores_pills_html += (
+            f'<span style="display: inline-block; padding: 4px 10px; margin: 2px 4px; '
+            f'background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); '
+            f'border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; '
+            f'font-size: 12px; color: #e2e8f0;">{period_label}: <strong style="color: {accent_color};">{s:+.2f}&sigma;</strong></span>'
+        )
+
+    scores_formatted_text = " -> ".join([f"{s:+.2f}σ" for s in recent_scores])
+
+    test_banner_html = ""
+    if is_test:
+        test_banner_html = """
+        <div style="background-color: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; padding: 14px 18px; margin-bottom: 24px;">
+          <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #38bdf8; margin-bottom: 4px;">System Verification Mode Active</div>
+          <div style="font-size: 13px; line-height: 1.5; color: #cbd5e1;">This transmission confirms that your end-to-end monitoring pipeline, Resend credentials, Supabase state store, and HTML email engine are fully operational.</div>
+        </div>
+        """
 
     html_content = f"""<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{subject}</title>
-  <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0f172a; color: #f8fafc; margin: 0; padding: 24px; }}
-    .card {{ max-width: 600px; margin: 0 auto; background-color: #1e293b; border-radius: 12px; border: 1px solid #334155; padding: 28px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }}
-    .header {{ border-bottom: 1px solid #334155; padding-bottom: 16px; margin-bottom: 20px; }}
-    .title {{ font-size: 20px; font-weight: 700; margin: 0 0 6px 0; color: #ffffff; }}
-    .badge {{ display: inline-block; padding: 4px 12px; border-radius: 9999px; font-size: 12px; font-weight: 700; color: #ffffff; background-color: {badge_color}; }}
-    .score-box {{ background-color: #0f172a; border-radius: 8px; padding: 18px; margin: 20px 0; text-align: center; border: 1px solid #334155; }}
-    .score-value {{ font-size: 36px; font-weight: 800; color: #38bdf8; margin: 4px 0; }}
-    .table {{ width: 100%; border-collapse: collapse; margin-top: 16px; }}
-    .table td {{ padding: 10px 12px; border-bottom: 1px solid #334155; font-size: 14px; }}
-    .table td.label {{ color: #94a3b8; font-weight: 500; }}
-    .table td.value {{ color: #f8fafc; font-weight: 600; text-align: right; }}
-    .footer {{ margin-top: 24px; padding-top: 16px; border-top: 1px solid #334155; font-size: 12px; color: #64748b; text-align: center; }}
-  </style>
 </head>
-<body>
-  <div class="card">
-    <div class="header">
-      <div class="badge">{tag} DEVIATION</div>
-      <h1 class="title" style="margin-top: 10px;">{ticker_a} vs {ticker_b}</h1>
-      <div style="font-size: 13px; color: #94a3b8;">Sustained Statistical Deviation on 5m Interval</div>
-    </div>
+<body style="margin: 0; padding: 32px 16px; background-color: #090d16; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; color: #f8fafc; -webkit-font-smoothing: antialiased;">
+  <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 600px; margin: 0 auto; background-color: #111827; border: 1px solid rgba(255, 255, 255, 0.08); border-top: 3px solid {accent_color}; border-radius: 12px; overflow: hidden; box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.6);">
+    <!-- Header -->
+    <tr>
+      <td style="padding: 24px 28px 16px 28px; border-bottom: 1px solid rgba(255, 255, 255, 0.06);">
+        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
+          <tr>
+            <td>
+              <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.12em; color: #94a3b8;">Twin Stock Trading // Intraday Statistical Monitor</div>
+              <div style="font-size: 24px; font-weight: 700; letter-spacing: -0.02em; color: #ffffff; margin-top: 4px;">{ticker_a} <span style="color: #64748b; font-weight: 400;">/</span> {ticker_b}</div>
+            </td>
+            <td align="right" valign="top">
+              <span style="display: inline-block; padding: 4px 12px; background: {accent_bg}; border: 1px solid {accent_border}; border-radius: 9999px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; color: {tag_text}; text-transform: uppercase;">{tag}</span>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
 
-    <div class="score-box">
-      <div style="font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: #94a3b8;">Deviation Score (Z-Score)</div>
-      <div class="score-value">{current_z:+.2f}σ</div>
-      <div style="font-size: 13px; color: #cbd5e1;">Consecutive Periods: {scores_formatted}</div>
-    </div>
+    <!-- Main Content Area -->
+    <tr>
+      <td style="padding: 24px 28px;">
+        {test_banner_html}
 
-    <table class="table">
-      <tr>
-        <td class="label">Stock 1 ({ticker_a}) Price</td>
-        <td class="value">${price_a:,.2f}</td>
-      </tr>
-      <tr>
-        <td class="label">Stock 2 ({ticker_b}) Price</td>
-        <td class="value">${price_b:,.2f}</td>
-      </tr>
-      <tr>
-        <td class="label">Daily Locked Beta (&beta;)</td>
-        <td class="value">{locked_beta:.4f}</td>
-      </tr>
-      <tr>
-        <td class="label">Current Spread</td>
-        <td class="value">${spread:,.4f}</td>
-      </tr>
-      <tr>
-        <td class="label">Rolling Mean Spread</td>
-        <td class="value">${rolling_mean:,.4f}</td>
-      </tr>
-      <tr>
-        <td class="label">Rolling Spread Std Dev (&sigma;)</td>
-        <td class="value">${rolling_std:,.4f}</td>
-      </tr>
-      <tr>
-        <td class="label">Timestamp</td>
-        <td class="value">{timestamp_str}</td>
-      </tr>
-    </table>
+        <!-- Deviation Hero Metric Box -->
+        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #0b0f19; border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 10px; margin-bottom: 22px;">
+          <tr>
+            <td style="padding: 22px 24px; text-align: center;">
+              <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: #94a3b8; margin-bottom: 6px;">Statistical Deviation Score (Z-Score)</div>
+              <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 44px; font-weight: 800; letter-spacing: -0.03em; color: {accent_color}; margin: 2px 0 10px 0;">{current_z:+.2f}&sigma;</div>
+              <div style="font-size: 12px; color: #94a3b8;">
+                Consecutive Confirmation:
+                <div style="margin-top: 8px;">{scores_pills_html}</div>
+              </div>
+            </td>
+          </tr>
+        </table>
 
-    <div class="footer">
-      Twin Stock Trading Alert &bull; Powered by Resend, Supabase & yfinance
-    </div>
-  </div>
+        <!-- Quantitative Posture & Direction -->
+        <div style="background-color: rgba(255, 255, 255, 0.02); border-left: 2px solid {accent_color}; padding: 12px 16px; margin-bottom: 24px; border-radius: 0 6px 6px 0;">
+          <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #cbd5e1; margin-bottom: 3px;">Quantitative Signal Posture</div>
+          <div style="font-size: 13px; line-height: 1.5; color: #94a3b8;">{action_summary}</div>
+        </div>
+
+        <!-- Component Price Cards -->
+        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom: 24px;">
+          <tr>
+            <td width="48%" style="background-color: #0d1322; border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px; padding: 14px 16px;">
+              <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8;">Stock A (Base)</div>
+              <div style="font-size: 15px; font-weight: 700; color: #ffffff; margin-top: 2px;">{ticker_a}</div>
+              <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 20px; font-weight: 700; color: #f8fafc; margin-top: 6px;">${price_a:,.2f}</div>
+            </td>
+            <td width="4%"></td>
+            <td width="48%" style="background-color: #0d1322; border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px; padding: 14px 16px;">
+              <div style="font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8;">Stock B (Hedge &beta; {locked_beta:.4f})</div>
+              <div style="font-size: 15px; font-weight: 700; color: #ffffff; margin-top: 2px;">{ticker_b}</div>
+              <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 20px; font-weight: 700; color: #f8fafc; margin-top: 6px;">${price_b:,.2f}</div>
+            </td>
+          </tr>
+        </table>
+
+        <!-- High-Density Spread Metric Rows -->
+        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse: collapse;">
+          <tr>
+            <td style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-size: 13px; color: #94a3b8;">Daily Locked Beta (&beta;)</td>
+            <td align="right" style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; font-weight: 600; color: #f8fafc;">{locked_beta:.4f}</td>
+          </tr>
+          <tr>
+            <td style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-size: 13px; color: #94a3b8;">Current Spread (P<sub>A</sub> &minus; &beta;P<sub>B</sub>)</td>
+            <td align="right" style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; font-weight: 600; color: #f8fafc;">${spread:,.4f}</td>
+          </tr>
+          <tr>
+            <td style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-size: 13px; color: #94a3b8;">Rolling Mean Spread (78-Period)</td>
+            <td align="right" style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; font-weight: 600; color: #f8fafc;">${rolling_mean:,.4f}</td>
+          </tr>
+          <tr>
+            <td style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-size: 13px; color: #94a3b8;">Rolling Spread Volatility (&sigma;)</td>
+            <td align="right" style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; font-weight: 600; color: #f8fafc;">${rolling_std:,.4f}</td>
+          </tr>
+          <tr>
+            <td style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-size: 13px; color: #94a3b8;">Sampling Granularity</td>
+            <td align="right" style="padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; font-weight: 600; color: #f8fafc;">5-Minute Candles (7-Day Rolling Cache)</td>
+          </tr>
+          <tr>
+            <td style="padding: 10px 0; font-size: 13px; color: #94a3b8;">Observation Timestamp</td>
+            <td align="right" style="padding: 10px 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; font-weight: 600; color: #94a3b8;">{timestamp_str}</td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+
+    <!-- Footer -->
+    <tr>
+      <td style="padding: 20px 28px; background-color: #0b0f19; border-top: 1px solid rgba(255, 255, 255, 0.06); text-align: center;">
+        <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; color: #64748b;">
+          Twin Stock Trading &bull; Automated via GitHub Actions, Supabase &amp; Resend
+        </div>
+        <div style="font-size: 11px; color: #475569; margin-top: 4px;">
+          Statistically disciplined pair monitoring. Cooldown reset enforced at |Z| &le; 0.25 or sign-inversion zero-crossing.
+        </div>
+      </td>
+    </tr>
+  </table>
 </body>
 </html>"""
 
-    text_content = f"""Pair Trading Statistical Alert
---------------------------------
+    text_content = f"""TWIN STOCK TRADING // STATISTICAL PAIR ALERT
+=====================================================
 Pair: {ticker_a} / {ticker_b}
-Condition: {tag} DEVIATION
-Deviation Score (Z-Score): {current_z:+.2f}
-Consecutive 5m Scores: {scores_formatted}
+Condition: {tag}
+Status: {status_label}
+Deviation Score: {current_z:+.2f} sigma
+Consecutive Confirmation: {scores_formatted_text}
 
-Exact Prices:
-- {ticker_a}: ${price_a:,.2f}
-- {ticker_b}: ${price_b:,.2f}
+ACTIONABLE SIGNAL POSTURE:
+{action_summary}
 
-Spread Metrics:
-- Daily Locked Beta: {locked_beta:.4f}
-- Current Spread: ${spread:,.4f}
-- Rolling Mean: ${rolling_mean:,.4f}
-- Rolling Std: ${rolling_std:,.4f}
+PRICE SUMMARY:
+- {ticker_a} (Base Asset):   ${price_a:,.2f}
+- {ticker_b} (Hedge Asset):  ${price_b:,.2f}
 
-Timestamp: {timestamp_str}
+STATISTICAL PARAMETERS:
+- Daily Locked Beta:         {locked_beta:.4f}
+- Current Spread:            ${spread:,.4f}
+- Rolling Mean Spread:       ${rolling_mean:,.4f}
+- Rolling Spread Volatility: ${rolling_std:,.4f}
+- Observation Window:        5m Intraday (7-day cache)
+- Timestamp:                 {timestamp_str}
+
+=====================================================
+Automated notification dispatched via Resend SDK.
 """
 
     return subject, html_content, text_content
@@ -719,6 +818,11 @@ def main() -> int:
         default=None,
         help="Comma-separated stock pairs, e.g. 'KO:PEP,MSFT:AAPL'.",
     )
+    parser.add_argument(
+        "--test-alert",
+        action="store_true",
+        help="Dispatch a test alert email using current pair metrics to verify Resend delivery and email formatting.",
+    )
     args = parser.parse_args()
 
     # Environment overrides
@@ -731,14 +835,18 @@ def main() -> int:
     rolling_window = int(os.environ.get("ROLLING_WINDOW", "78"))
     api_delay = float(os.environ.get("YFINANCE_DELAY_SECONDS", "1.0"))
     ignore_hours_env = os.environ.get("IGNORE_MARKET_HOURS", "false").lower() in ("true", "1", "yes")
+    test_alert_mode = args.test_alert or os.environ.get("TEST_ALERT", "false").lower() in ("true", "1", "yes")
 
     # 1. Market Hours Check
-    if not (args.force or ignore_hours_env):
+    if not (args.force or ignore_hours_env or test_alert_mode):
         if not is_market_open(tz_name=tz_name, open_time_str=open_str, close_time_str=close_str):
             logger.info("Market is currently closed. Exiting silently.")
             return 0
 
-    logger.info("Market is open (or bypass active). Starting pair evaluation.")
+    if test_alert_mode and not is_market_open(tz_name=tz_name, open_time_str=open_str, close_time_str=close_str):
+        logger.info("Market is closed, but --test-alert is active. Bypassing market hours check for verification.")
+    else:
+        logger.info("Market is open (or bypass active). Starting pair evaluation.")
 
     market_tz = pytz.timezone(tz_name)
     now_market = datetime.datetime.now(market_tz)
@@ -748,6 +856,9 @@ def main() -> int:
     backend = SupabaseBackend()
     pairs = parse_pairs(args.pairs)
     logger.info(f"Monitoring {len(pairs)} pairs: {pairs}")
+
+    evaluated_candidates: List[Dict[str, Any]] = []
+    alerts_dispatched = 0
 
     # 3. Process Each Pair
     for ticker_a, ticker_b in pairs:
@@ -823,6 +934,19 @@ def main() -> int:
                 f"Sustained: {is_sustained} ({direction})"
             )
 
+            # Record for potential test verification dispatch
+            evaluated_candidates.append({
+                "ticker_a": ticker_a,
+                "ticker_b": ticker_b,
+                "pair_key": pair_key,
+                "current_z": current_z,
+                "prev_z": prev_z,
+                "recent_scores": recent_scores if recent_scores else [prev_z, current_z],
+                "direction": direction if direction != "NONE" else ("UPPER" if current_z >= 0 else "LOWER"),
+                "metrics": metrics,
+                "locked_beta": locked_beta,
+            })
+
             # E. Cooldown & Zero-Crossing Logic
             pair_state = backend.get_pair_state(pair_key)
             should_alert, reason = evaluate_cooldown_and_zero_crossing(
@@ -852,6 +976,7 @@ def main() -> int:
                     locked_beta=locked_beta,
                     timestamp_str=metrics["timestamp"],
                     direction=direction,
+                    is_test=False,
                 )
 
                 email_sent = send_alert_email(
@@ -862,6 +987,7 @@ def main() -> int:
                 )
 
                 if email_sent:
+                    alerts_dispatched += 1
                     pair_state["last_alert_date"] = today_date_str
                     pair_state["last_alert_timestamp"] = metrics["timestamp"]
                     pair_state["last_alert_score"] = float(current_z)
@@ -875,6 +1001,41 @@ def main() -> int:
 
         except Exception as e:
             logger.error(f"Unexpected error processing pair {pair_key}: {e}", exc_info=True)
+
+    # G. Verification Test Dispatch (if requested and no real alert triggered)
+    if test_alert_mode and alerts_dispatched == 0 and evaluated_candidates:
+        # Choose the pair with the most pronounced statistical divergence
+        best = max(evaluated_candidates, key=lambda p: abs(p["current_z"]))
+        logger.info(
+            f"[TEST ALERT] Initiating system verification alert dispatch for pair {best['pair_key']} "
+            f"(Z = {best['current_z']:+.2f}σ)..."
+        )
+        b_metrics = best["metrics"]
+        subject, html_body, text_body = format_email_content(
+            ticker_a=best["ticker_a"],
+            ticker_b=best["ticker_b"],
+            current_z=best["current_z"],
+            recent_scores=best["recent_scores"],
+            price_a=b_metrics["latest_price_a"],
+            price_b=b_metrics["latest_price_b"],
+            spread=b_metrics["latest_spread"],
+            rolling_mean=b_metrics["rolling_mean"],
+            rolling_std=b_metrics["rolling_std"],
+            locked_beta=best["locked_beta"],
+            timestamp_str=b_metrics["timestamp"],
+            direction=best["direction"],
+            is_test=True,
+        )
+        test_sent = send_alert_email(
+            subject=subject,
+            html_content=html_body,
+            text_content=text_body,
+            dry_run=args.dry_run,
+        )
+        if test_sent:
+            logger.info(f"[TEST ALERT] Verification alert successfully dispatched for {best['pair_key']}.")
+        else:
+            logger.error(f"[TEST ALERT] Failed to send verification alert email.")
 
     logger.info("Twin Stock Trading monitoring run completed successfully.")
     return 0

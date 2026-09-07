@@ -295,3 +295,31 @@ def test_parse_pairs():
     # Default True Twins fallback
     default_pairs = parse_pairs(None)
     assert default_pairs == [("KO", "PEP"), ("V", "MA"), ("HD", "LOW"), ("XOM", "CVX")]
+
+
+def test_format_email_content_verification_mode():
+    subject, html_content, text_content = format_email_content(
+        ticker_a="XOM",
+        ticker_b="CVX",
+        current_z=-2.07,
+        recent_scores=[-2.08, -2.07],
+        price_a=118.50,
+        price_b=158.20,
+        spread=-1.2345,
+        rolling_mean=-0.1200,
+        rolling_std=0.5400,
+        locked_beta=0.7417,
+        timestamp_str="2026-09-07 16:00:00 UTC",
+        direction="LOWER",
+        is_test=True,
+    )
+
+    assert "[TEST VERIFICATION]" in subject
+    assert "XOM" in subject and "CVX" in subject
+    assert "-2.07" in subject
+    assert "System Verification Mode Active" in html_content
+    assert "$118.50" in html_content and "$158.20" in html_content
+    assert "0.7417" in html_content
+    assert "OVERSOLD" in html_content
+    assert "TWIN STOCK TRADING // STATISTICAL PAIR ALERT" in text_content
+

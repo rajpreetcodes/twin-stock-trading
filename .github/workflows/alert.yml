@@ -12,12 +12,17 @@ on:
         description: 'Bypass market hours check (run even if market is closed)'
         required: false
         type: boolean
-        default: false
+        default: true
       dry_run:
         description: 'Dry run (calculate metrics and test state without sending emails)'
         required: false
         type: boolean
         default: false
+      test_alert:
+        description: 'Dispatch a test alert email to verify formatting and delivery'
+        required: false
+        type: boolean
+        default: true
 
 concurrency:
   group: twin-stock-trading-monitor
@@ -65,4 +70,8 @@ jobs:
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             FLAGS="$FLAGS --dry-run"
           fi
+          if [ "${{ inputs.test_alert }}" = "true" ]; then
+            FLAGS="$FLAGS --test-alert"
+          fi
           python monitor.py $FLAGS
+
