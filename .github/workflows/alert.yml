@@ -12,7 +12,7 @@ on:
         description: 'Bypass market hours check (run even if market is closed)'
         required: false
         type: boolean
-        default: true
+        default: false
       dry_run:
         description: 'Dry run (calculate metrics and test state without sending emails)'
         required: false
@@ -22,7 +22,7 @@ on:
         description: 'Dispatch a test alert email to verify formatting and delivery'
         required: false
         type: boolean
-        default: true
+        default: false
 
 concurrency:
   group: twin-stock-trading-monitor
