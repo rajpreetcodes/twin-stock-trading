@@ -2,19 +2,30 @@ name: Twin Stock Trading Monitor
 
 on:
   schedule:
-    # Run every 5 minutes during US market hours (Mon-Fri)
-    # Cron schedule */5 13-22 * * 1-5 (UTC) covers both Eastern Daylight Time (EDT) and Eastern Standard Time (EST).
-    # monitor.py verifies the exact 09:30 to 16:00 America/New_York market window and exits cleanly if closed.
-    - cron: '*/5 13-22 * * 1-5'
+    # 2 daily automated market sessions (Mon-Fri) that run continuous 5-minute loops:
+    # Session 1: 13:25 UTC (starts 5 mins before 09:30 AM EDT open, covers morning until ~17:00 UTC)
+    # Session 2: 17:00 UTC (01:00 PM EDT, covers afternoon until 16:00 EDT / 20:00 UTC market close)
+    - cron: '25 13 * * 1-5'
+    - cron: '0 17 * * 1-5'
   workflow_dispatch:
     inputs:
+      loop:
+        description: 'Run continuously in a 5-minute loop during market hours'
+        required: false
+        type: boolean
+        default: true
+      interval:
+        description: 'Loop interval in seconds (default: 300 for 5 minutes)'
+        required: false
+        type: string
+        default: '300'
       force:
         description: 'Bypass market hours check (run even if market is closed)'
         required: false
         type: boolean
         default: false
       dry_run:
-        description: 'Dry run (calculate metrics and test state without sending emails)'
+        description: 'Dry run (calculate metrics without sending emails)'
         required: false
         type: boolean
         default: false
@@ -26,12 +37,13 @@ on:
 
 concurrency:
   group: twin-stock-trading-monitor
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   monitor:
     name: Intraday Pair Monitor
     runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     steps:
       - name: Checkout Repository
@@ -73,5 +85,10 @@ jobs:
           if [ "${{ inputs.test_alert }}" = "true" ]; then
             FLAGS="$FLAGS --test-alert"
           fi
+          # Default to continuous loop mode unless explicitly set to false
+          if [ "${{ inputs.loop }}" != "false" ]; then
+            FLAGS="$FLAGS --loop --interval ${{ inputs.interval || '300' }}"
+          fi
           python monitor.py $FLAGS
+
 

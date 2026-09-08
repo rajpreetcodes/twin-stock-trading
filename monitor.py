@@ -1068,77 +1068,35 @@ def parse_pairs(pairs_input: Optional[str]) -> List[Tuple[str, str]]:
     return parsed
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Intraday stock pair statistical deviation monitor (Twin Stock Trading)."
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Bypass market hours check (runs even if market is closed or weekend).",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Run without sending real emails.",
-    )
-    parser.add_argument(
-        "--pairs",
-        type=str,
-        default=None,
-        help="Comma-separated stock pairs, e.g. 'KO:PEP,MSFT:AAPL'.",
-    )
-    parser.add_argument(
-        "--test-alert",
-        action="store_true",
-        help="Dispatch a test alert email using current pair metrics to verify Resend delivery and email formatting.",
-    )
-    args = parser.parse_args()
-
-    # Environment overrides
-    tz_name = os.environ.get("MARKET_TIMEZONE", "America/New_York")
-    open_str = os.environ.get("MARKET_OPEN", "09:30")
-    close_str = os.environ.get("MARKET_CLOSE", "16:00")
-    threshold = float(os.environ.get("Z_SCORE_THRESHOLD", "2.5"))
-    sustained_periods = int(os.environ.get("SUSTAINED_PERIODS", "2"))
-    zero_threshold = float(os.environ.get("ZERO_THRESHOLD", "0.25"))
-    rolling_window = int(os.environ.get("ROLLING_WINDOW", "78"))
-    api_delay = float(os.environ.get("YFINANCE_DELAY_SECONDS", "1.0"))
-    ignore_hours_env = os.environ.get("IGNORE_MARKET_HOURS", "false").lower() in ("true", "1", "yes")
-    test_alert_mode = args.test_alert or os.environ.get("TEST_ALERT", "false").lower() in ("true", "1", "yes")
-
-    # 1. Market Hours Check
-    if not (args.force or ignore_hours_env or test_alert_mode):
-        if not is_market_open(tz_name=tz_name, open_time_str=open_str, close_time_str=close_str):
-            logger.info("Market is currently closed. Exiting silently.")
-            return 0
-
-    if test_alert_mode and not is_market_open(tz_name=tz_name, open_time_str=open_str, close_time_str=close_str):
-        logger.info("Market is closed, but --test-alert is active. Bypassing market hours check for verification.")
-    else:
-        logger.info("Market is open (or bypass active). Starting pair evaluation.")
-
+def run_single_cycle(
+    args: argparse.Namespace,
+    backend: SupabaseBackend,
+    pairs: List[Tuple[str, str]],
+    tz_name: str,
+    threshold: float,
+    sustained_periods: int,
+    zero_threshold: float,
+    rolling_window: int,
+    api_delay: float,
+    test_alert_mode: bool,
+) -> int:
+    """Execute a single evaluation cycle across all monitored pairs."""
     market_tz = pytz.timezone(tz_name)
     now_market = datetime.datetime.now(market_tz)
     today_date_str = now_market.strftime("%Y-%m-%d")
 
-    # 2. Initialize Supabase Backend & Paper Portfolio
-    backend = SupabaseBackend()
     portfolio = backend.get_portfolio()
     open_positions_map = {p["pair_key"]: p for p in backend.get_all_open_positions()}
     logger.info(
-        f"Paper Portfolio Initialized: Balance=${portfolio.get('cash_balance', 100000.0):,.2f} | "
+        f"Paper Portfolio State: Balance=${portfolio.get('cash_balance', 100000.0):,.2f} | "
         f"Total Equity=${portfolio.get('total_equity', 100000.0):,.2f} | "
         f"Open Positions={len(open_positions_map)}"
     )
 
-    pairs = parse_pairs(args.pairs)
-    logger.info(f"Monitoring {len(pairs)} pairs: {pairs}")
-
     evaluated_candidates: List[Dict[str, Any]] = []
     alerts_dispatched = 0
 
-    # 3. Process Each Pair
+    # Process Each Pair
     for ticker_a, ticker_b in pairs:
         pair_key = f"{ticker_a}-{ticker_b}"
         logger.info(f"=== Evaluating Pair: {pair_key} ===")
@@ -1541,6 +1499,164 @@ def main() -> int:
     return 0
 
 
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Intraday stock pair statistical deviation monitor (Twin Stock Trading)."
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Bypass market hours check (runs even if market is closed or weekend).",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run without sending real emails.",
+    )
+    parser.add_argument(
+        "--pairs",
+        type=str,
+        default=None,
+        help="Comma-separated stock pairs, e.g. 'KO:PEP,MSFT:AAPL'.",
+    )
+    parser.add_argument(
+        "--test-alert",
+        action="store_true",
+        help="Dispatch a test alert email using current pair metrics to verify Resend delivery and email formatting.",
+    )
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="Run continuously in a loop during market hours.",
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=300,
+        help="Loop interval in seconds (default: 300).",
+    )
+    parser.add_argument(
+        "--max-cycles",
+        type=int,
+        default=None,
+        help="Max loop cycles to run before exiting (default: None, runs until market close).",
+    )
+    args = parser.parse_args()
+
+    # Environment overrides
+    tz_name = os.environ.get("MARKET_TIMEZONE", "America/New_York")
+    open_str = os.environ.get("MARKET_OPEN", "09:30")
+    close_str = os.environ.get("MARKET_CLOSE", "16:00")
+    threshold = float(os.environ.get("Z_SCORE_THRESHOLD", "2.5"))
+    sustained_periods = int(os.environ.get("SUSTAINED_PERIODS", "2"))
+    zero_threshold = float(os.environ.get("ZERO_THRESHOLD", "0.25"))
+    rolling_window = int(os.environ.get("ROLLING_WINDOW", "78"))
+    api_delay = float(os.environ.get("YFINANCE_DELAY_SECONDS", "1.0"))
+    ignore_hours_env = os.environ.get("IGNORE_MARKET_HOURS", "false").lower() in ("true", "1", "yes")
+    test_alert_mode = args.test_alert or os.environ.get("TEST_ALERT", "false").lower() in ("true", "1", "yes")
+    loop_mode = args.loop or os.environ.get("LOOP_MODE", "false").lower() in ("true", "1", "yes")
+    interval = int(os.environ.get("LOOP_INTERVAL", str(args.interval)))
+
+    backend = SupabaseBackend()
+    pairs = parse_pairs(args.pairs)
+    logger.info(f"Monitoring {len(pairs)} pairs: {pairs}")
+
+    # Single-run mode
+    if not loop_mode:
+        if not (args.force or ignore_hours_env or test_alert_mode):
+            if not is_market_open(tz_name=tz_name, open_time_str=open_str, close_time_str=close_str):
+                logger.info("Market is currently closed. Exiting silently.")
+                return 0
+        return run_single_cycle(
+            args=args,
+            backend=backend,
+            pairs=pairs,
+            tz_name=tz_name,
+            threshold=threshold,
+            sustained_periods=sustained_periods,
+            zero_threshold=zero_threshold,
+            rolling_window=rolling_window,
+            api_delay=api_delay,
+            test_alert_mode=test_alert_mode,
+        )
+
+    # Continuous Loop Mode (runs during market hours)
+    logger.info(f"Continuous Market Monitoring Active (Interval: {interval}s).")
+    market_tz = pytz.timezone(tz_name)
+    cycle = 0
+
+    while True:
+        cycle += 1
+        now_market = datetime.datetime.now(market_tz)
+
+        # Check market hours if not forced
+        if not (args.force or ignore_hours_env or test_alert_mode):
+            # Weekend check
+            if now_market.weekday() >= 5:
+                logger.info("Market is closed (Weekend). Exiting continuous monitoring session.")
+                break
+
+            open_parts = [int(p) for p in open_str.split(":")]
+            close_parts = [int(p) for p in close_str.split(":")]
+            open_time = datetime.time(open_parts[0], open_parts[1])
+            close_time = datetime.time(close_parts[0], close_parts[1])
+
+            # After market close
+            if now_market.time() >= close_time:
+                logger.info(f"Market reached close time ({now_market.strftime('%H:%M:%S')} >= {close_str}). Exiting session.")
+                break
+
+            # Before market open
+            if now_market.time() < open_time:
+                open_dt = now_market.replace(hour=open_parts[0], minute=open_parts[1], second=0, microsecond=0)
+                wait_sec = (open_dt - now_market).total_seconds()
+                if wait_sec > 0:
+                    sleep_time = min(wait_sec + 2, 300)
+                    logger.info(f"Market opens at {open_str} (in {wait_sec:.0f}s). Waiting {sleep_time:.0f}s...")
+                    time.sleep(sleep_time)
+                    continue
+
+        logger.info("==================================================")
+        logger.info(f"=== Starting Loop Cycle #{cycle} [{now_market.strftime('%Y-%m-%d %H:%M:%S %Z')}] ===")
+        logger.info("==================================================")
+
+        try:
+            run_single_cycle(
+                args=args,
+                backend=backend,
+                pairs=pairs,
+                tz_name=tz_name,
+                threshold=threshold,
+                sustained_periods=sustained_periods,
+                zero_threshold=zero_threshold,
+                rolling_window=rolling_window,
+                api_delay=api_delay,
+                test_alert_mode=test_alert_mode,
+            )
+        except Exception as e:
+            logger.error(f"Error during loop cycle #{cycle}: {e}", exc_info=True)
+
+        if args.max_cycles and cycle >= args.max_cycles:
+            logger.info(f"Reached max cycles limit ({args.max_cycles}). Exiting loop.")
+            break
+
+        # Check if next sleep pushes beyond close time
+        now_after_cycle = datetime.datetime.now(market_tz)
+        if not (args.force or ignore_hours_env or test_alert_mode):
+            close_parts = [int(p) for p in close_str.split(":")]
+            close_time = datetime.time(close_parts[0], close_parts[1])
+            if now_after_cycle.time() >= close_time:
+                logger.info("Market reached closing time during cycle. Exiting session.")
+                break
+
+        logger.info(f"Cycle #{cycle} complete. Sleeping {interval}s until next check...")
+        time.sleep(interval)
+
+    logger.info("Continuous monitor session finished.")
+    return 0
+
+
 if __name__ == "__main__":
     sys.exit(main())
+
 
