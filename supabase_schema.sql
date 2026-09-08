@@ -123,17 +123,23 @@ ALTER TABLE paper_positions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE paper_trades ENABLE ROW LEVEL SECURITY;
 
 -- Allow read/write access for authenticated and service roles
+DROP POLICY IF EXISTS "Allow full access to pair_state" ON pair_state;
 CREATE POLICY "Allow full access to pair_state" ON pair_state
     FOR ALL USING (true) WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Allow full access to candle_cache" ON candle_cache;
 CREATE POLICY "Allow full access to candle_cache" ON candle_cache
     FOR ALL USING (true) WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Allow full access to paper_portfolio" ON paper_portfolio;
 CREATE POLICY "Allow full access to paper_portfolio" ON paper_portfolio
     FOR ALL USING (true) WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Allow full access to paper_positions" ON paper_positions;
 CREATE POLICY "Allow full access to paper_positions" ON paper_positions
     FOR ALL USING (true) WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Allow full access to paper_trades" ON paper_trades;
 CREATE POLICY "Allow full access to paper_trades" ON paper_trades
     FOR ALL USING (true) WITH CHECK (true);
+
