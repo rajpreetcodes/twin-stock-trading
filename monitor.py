@@ -47,6 +47,69 @@ DEFAULT_USER_AGENT = (
     "Chrome/124.0.0.0 Safari/537.36 (TwinStockTrading/1.0)"
 )
 
+# Allowed column sets for Supabase tables (enforces strict PostgREST payload compliance)
+PAPER_PORTFOLIO_COLUMNS = {
+    "id",
+    "starting_balance",
+    "cash_balance",
+    "invested_capital",
+    "total_equity",
+    "total_realized_pnl",
+    "total_trades_count",
+    "win_trades_count",
+    "loss_trades_count",
+    "last_trade_at",
+    "updated_at",
+}
+
+PAPER_POSITIONS_COLUMNS = {
+    "pair_key",
+    "direction",
+    "ticker_a",
+    "side_a",
+    "shares_a",
+    "entry_price_a",
+    "current_price_a",
+    "ticker_b",
+    "side_b",
+    "shares_b",
+    "entry_price_b",
+    "current_price_b",
+    "locked_beta",
+    "entry_spread",
+    "current_spread",
+    "entry_z_score",
+    "current_z_score",
+    "capital_invested",
+    "unrealized_pnl",
+    "unrealized_pnl_pct",
+    "opened_at",
+    "updated_at",
+}
+
+PAPER_TRADES_COLUMNS = {
+    "pair_key",
+    "action",
+    "direction",
+    "reason",
+    "ticker_a",
+    "side_a",
+    "shares_a",
+    "price_a",
+    "ticker_b",
+    "side_b",
+    "shares_b",
+    "price_b",
+    "locked_beta",
+    "spread",
+    "z_score",
+    "capital_allocated",
+    "realized_pnl",
+    "return_pct",
+    "executed_at",
+    "notes",
+}
+
 
 # ---------------------------------------------------------------------------
 # Market Hours Verification
@@ -268,23 +331,32 @@ class SupabaseBackend:
                     for k in ["starting_balance", "cash_balance", "invested_capital", "total_equity", "total_realized_pnl"]:
                         if k in row and row[k] is not None:
                             row[k] = float(row[k])
+                    row["realized_pnl"] = row.get("total_realized_pnl", 0.0)
                     return row
             except Exception as e:
                 logger.debug(f"Could not load paper_portfolio from Supabase: {e}. Using local store.")
 
         if not hasattr(self, "_memory_portfolio") or not self._memory_portfolio:
             self._memory_portfolio = default_portfolio
+        self._memory_portfolio["realized_pnl"] = self._memory_portfolio.get("total_realized_pnl", 0.0)
         return self._memory_portfolio
 
     def update_portfolio(self, portfolio_dict: Dict[str, Any]) -> None:
         """Upsert singleton paper portfolio state."""
         portfolio_dict["id"] = 1
-        portfolio_dict["updated_at"] = datetime.datetime.now(pytz.utc).isoformat()
-        self._memory_portfolio = portfolio_dict
+        now_utc = datetime.datetime.now(pytz.utc).isoformat()
+        if "updated_at" not in portfolio_dict or not portfolio_dict["updated_at"]:
+            portfolio_dict["updated_at"] = portfolio_dict.get("last_updated", now_utc)
+        if "total_realized_pnl" not in portfolio_dict and "realized_pnl" in portfolio_dict:
+            portfolio_dict["total_realized_pnl"] = portfolio_dict["realized_pnl"]
+        portfolio_dict["realized_pnl"] = portfolio_dict.get("total_realized_pnl", 0.0)
+
+        self._memory_portfolio = dict(portfolio_dict)
 
         if self.client:
             try:
-                self.client.table("paper_portfolio").upsert(portfolio_dict).execute()
+                clean_payload = {k: v for k, v in portfolio_dict.items() if k in PAPER_PORTFOLIO_COLUMNS}
+                self.client.table("paper_portfolio").upsert(clean_payload).execute()
             except Exception as e:
                 logger.error(f"Error updating paper_portfolio in Supabase: {e}")
 
@@ -311,7 +383,7 @@ class SupabaseBackend:
         if self.client:
             try:
                 res = self.client.table("paper_positions").select("*").execute()
-                if res.data:
+                if res.data is not None:
                     positions = []
                     for pos in res.data:
                         for k in ["entry_price_a", "current_price_a", "entry_price_b", "current_price_b", "locked_beta", "entry_spread", "current_spread", "entry_z_score", "current_z_score", "capital_invested", "unrealized_pnl", "unrealized_pnl_pct"]:
@@ -331,13 +403,27 @@ class SupabaseBackend:
         pair_key = position_dict.get("pair_key")
         if not pair_key:
             return
+
+        now_utc = datetime.datetime.now(pytz.utc).isoformat()
+        if "updated_at" not in position_dict or not position_dict["updated_at"]:
+            position_dict["updated_at"] = position_dict.get("last_updated", now_utc)
+        if "entry_spread" not in position_dict:
+            position_dict["entry_spread"] = position_dict.get("current_spread", 0.0)
+        if "current_spread" not in position_dict:
+            position_dict["current_spread"] = position_dict.get("entry_spread", 0.0)
+        if "entry_z_score" not in position_dict:
+            position_dict["entry_z_score"] = position_dict.get("current_z_score", 0.0)
+        if "current_z_score" not in position_dict:
+            position_dict["current_z_score"] = position_dict.get("entry_z_score", 0.0)
+
         if not hasattr(self, "_memory_positions"):
             self._memory_positions = {}
-        self._memory_positions[pair_key] = position_dict
+        self._memory_positions[pair_key] = dict(position_dict)
 
         if self.client:
             try:
-                self.client.table("paper_positions").upsert(position_dict).execute()
+                clean_payload = {k: v for k, v in position_dict.items() if k in PAPER_POSITIONS_COLUMNS}
+                self.client.table("paper_positions").upsert(clean_payload).execute()
             except Exception as e:
                 logger.error(f"Error saving paper_position for {pair_key} in Supabase: {e}")
 
@@ -354,13 +440,31 @@ class SupabaseBackend:
 
     def record_trade(self, trade_dict: Dict[str, Any]) -> None:
         """Log a trade execution event to the historical ledger."""
+        now_utc = datetime.datetime.now(pytz.utc).isoformat()
+        if "capital_allocated" not in trade_dict and "total_capital" in trade_dict:
+            trade_dict["capital_allocated"] = trade_dict["total_capital"]
+        if "locked_beta" not in trade_dict and "beta_used" in trade_dict:
+            trade_dict["locked_beta"] = trade_dict["beta_used"]
+        if "z_score" not in trade_dict and "z_score_at_trade" in trade_dict:
+            trade_dict["z_score"] = trade_dict["z_score_at_trade"]
+        if "executed_at" not in trade_dict or not trade_dict["executed_at"]:
+            trade_dict["executed_at"] = now_utc
+        if "spread" not in trade_dict:
+            trade_dict["spread"] = 0.0
+        if "reason" not in trade_dict or not trade_dict["reason"]:
+            action = trade_dict.get("action", "ENTER_PAIR")
+            trade_dict["reason"] = (
+                "MEAN_REVERSION_ZERO_CROSSING" if action == "EXIT_PAIR" else "STATISTICAL_DIVERGENCE"
+            )
+
         if not hasattr(self, "_memory_trades"):
             self._memory_trades = []
-        self._memory_trades.append(trade_dict)
+        self._memory_trades.append(dict(trade_dict))
 
         if self.client:
             try:
-                self.client.table("paper_trades").insert(trade_dict).execute()
+                clean_payload = {k: v for k, v in trade_dict.items() if k in PAPER_TRADES_COLUMNS}
+                self.client.table("paper_trades").insert(clean_payload).execute()
             except Exception as e:
                 logger.error(f"Error recording paper_trade in Supabase: {e}")
 
@@ -1203,8 +1307,11 @@ def run_single_cycle(
 
                 open_pos["current_price_a"] = cur_price_a
                 open_pos["current_price_b"] = cur_price_b
+                open_pos["current_spread"] = metrics["latest_spread"]
+                open_pos["current_z_score"] = float(current_z)
                 open_pos["unrealized_pnl"] = unrealized_pnl
                 open_pos["unrealized_pnl_pct"] = unrealized_pct
+                open_pos["updated_at"] = metrics["timestamp"]
                 open_pos["last_updated"] = metrics["timestamp"]
                 backend.save_position(open_pos)
 
@@ -1213,10 +1320,10 @@ def run_single_cycle(
                 if abs(current_z) <= zero_threshold or (prev_z * current_z <= 0 and abs(prev_z) > zero_threshold):
                     logger.info(f"[{pair_key}] Mean-reversion exit condition met (Z={current_z:+.2f}). Closing paper position...")
                     exit_trade = {
-                        "trade_id": str(uuid.uuid4()),
                         "pair_key": pair_key,
                         "action": "EXIT_PAIR",
                         "direction": open_pos.get("direction", "SPREAD"),
+                        "reason": "MEAN_REVERSION_ZERO_CROSSING",
                         "side_a": "SELL" if side_a == "BUY" else "BUY_TO_COVER",
                         "ticker_a": ticker_a,
                         "shares_a": sh_a,
@@ -1227,23 +1334,38 @@ def run_single_cycle(
                         "shares_b": sh_b,
                         "price_b": cur_price_b,
                         "capital_b": round(sh_b * cur_price_b, 2),
+                        "capital_allocated": cap_inv,
                         "total_capital": cap_inv,
-                        "z_score_at_trade": float(current_z),
+                        "locked_beta": locked_beta,
                         "beta_used": locked_beta,
+                        "spread": metrics["latest_spread"],
+                        "z_score": float(current_z),
+                        "z_score_at_trade": float(current_z),
                         "realized_pnl": unrealized_pnl,
+                        "return_pct": unrealized_pct,
                         "executed_at": metrics["timestamp"],
+                        "notes": f"Closed on mean-reversion zero-crossing at Z={current_z:+.2f}",
                     }
                     backend.record_trade(exit_trade)
                     backend.delete_position(pair_key)
 
                     # Update portfolio balances
                     portfolio["cash_balance"] = round(portfolio.get("cash_balance", 100000.0) + cap_inv + unrealized_pnl, 2)
-                    portfolio["realized_pnl"] = round(portfolio.get("realized_pnl", 0.0) + unrealized_pnl, 2)
+                    portfolio["total_realized_pnl"] = round(portfolio.get("total_realized_pnl", 0.0) + unrealized_pnl, 2)
+                    portfolio["realized_pnl"] = portfolio["total_realized_pnl"]
+                    portfolio["total_trades_count"] = portfolio.get("total_trades_count", 0) + 1
+                    if unrealized_pnl > 0:
+                        portfolio["win_trades_count"] = portfolio.get("win_trades_count", 0) + 1
+                    elif unrealized_pnl < 0:
+                        portfolio["loss_trades_count"] = portfolio.get("loss_trades_count", 0) + 1
+                    portfolio["last_trade_at"] = metrics["timestamp"]
                     current_open_positions = backend.get_all_open_positions()
                     portfolio["open_positions_count"] = len(current_open_positions)
                     total_floating = sum(p.get("unrealized_pnl", 0.0) for p in current_open_positions)
                     invested_capital = sum(p.get("capital_invested", 0.0) for p in current_open_positions)
+                    portfolio["invested_capital"] = round(invested_capital, 2)
                     portfolio["total_equity"] = round(portfolio["cash_balance"] + invested_capital + total_floating, 2)
+                    portfolio["updated_at"] = metrics["timestamp"]
                     portfolio["last_updated"] = metrics["timestamp"]
                     backend.update_portfolio(portfolio)
 
@@ -1308,20 +1430,24 @@ def run_single_cycle(
                     "entry_price_b": metrics["latest_price_b"],
                     "current_price_b": metrics["latest_price_b"],
                     "locked_beta": locked_beta,
+                    "entry_spread": metrics["latest_spread"],
+                    "current_spread": metrics["latest_spread"],
                     "entry_z_score": float(current_z),
+                    "current_z_score": float(current_z),
                     "capital_invested": total_cap,
                     "unrealized_pnl": 0.0,
                     "unrealized_pnl_pct": 0.0,
                     "opened_at": metrics["timestamp"],
+                    "updated_at": metrics["timestamp"],
                     "last_updated": metrics["timestamp"],
                 }
                 backend.save_position(new_pos)
 
                 trade_record = {
-                    "trade_id": str(uuid.uuid4()),
                     "pair_key": pair_key,
                     "action": "ENTER_PAIR",
                     "direction": trade_dir,
+                    "reason": "STATISTICAL_DIVERGENCE",
                     "side_a": side_a,
                     "ticker_a": ticker_a,
                     "shares_a": shares_a,
@@ -1332,20 +1458,30 @@ def run_single_cycle(
                     "shares_b": shares_b,
                     "price_b": metrics["latest_price_b"],
                     "capital_b": cap_b,
+                    "capital_allocated": total_cap,
                     "total_capital": total_cap,
+                    "spread": metrics["latest_spread"],
+                    "z_score": float(current_z),
                     "z_score_at_trade": float(current_z),
+                    "locked_beta": locked_beta,
                     "beta_used": locked_beta,
                     "realized_pnl": 0.0,
+                    "return_pct": 0.0,
                     "executed_at": metrics["timestamp"],
+                    "notes": f"Entered on sustained deviation {direction} at Z={current_z:+.2f}",
                 }
                 backend.record_trade(trade_record)
 
                 portfolio["cash_balance"] = round(portfolio.get("cash_balance", 100000.0) - total_cap, 2)
+                portfolio["total_trades_count"] = portfolio.get("total_trades_count", 0) + 1
+                portfolio["last_trade_at"] = metrics["timestamp"]
                 current_open_positions = backend.get_all_open_positions()
                 portfolio["open_positions_count"] = len(current_open_positions)
                 total_floating = sum(p.get("unrealized_pnl", 0.0) for p in current_open_positions)
                 invested_capital = sum(p.get("capital_invested", 0.0) for p in current_open_positions)
+                portfolio["invested_capital"] = round(invested_capital, 2)
                 portfolio["total_equity"] = round(portfolio["cash_balance"] + invested_capital + total_floating, 2)
+                portfolio["updated_at"] = metrics["timestamp"]
                 portfolio["last_updated"] = metrics["timestamp"]
                 backend.update_portfolio(portfolio)
 
@@ -1408,10 +1544,10 @@ def run_single_cycle(
         s_b = "BUY" if best["direction"] == "UPPER" else "SELL_SHORT"
 
         test_trade = {
-            "trade_id": str(uuid.uuid4()),
             "pair_key": best["pair_key"],
             "action": "ENTER_PAIR",
             "direction": t_dir,
+            "reason": "MANUAL_TEST",
             "side_a": s_a,
             "ticker_a": best["ticker_a"],
             "shares_a": shares_a,
@@ -1422,11 +1558,17 @@ def run_single_cycle(
             "shares_b": shares_b,
             "price_b": b_metrics["latest_price_b"],
             "capital_b": cap_b,
+            "capital_allocated": total_cap,
             "total_capital": total_cap,
+            "spread": b_metrics["latest_spread"],
+            "z_score": float(best["current_z"]),
             "z_score_at_trade": float(best["current_z"]),
+            "locked_beta": best["locked_beta"],
             "beta_used": best["locked_beta"],
             "realized_pnl": 0.0,
+            "return_pct": 0.0,
             "executed_at": b_metrics["timestamp"],
+            "notes": "System verification mode test execution",
         }
         # Persist test trade in Supabase paper_trades ledger
         backend.record_trade(test_trade)
@@ -1447,21 +1589,29 @@ def run_single_cycle(
                 "entry_price_b": b_metrics["latest_price_b"],
                 "current_price_b": b_metrics["latest_price_b"],
                 "locked_beta": best["locked_beta"],
+                "entry_spread": b_metrics["latest_spread"],
+                "current_spread": b_metrics["latest_spread"],
                 "entry_z_score": float(best["current_z"]),
+                "current_z_score": float(best["current_z"]),
                 "capital_invested": total_cap,
                 "unrealized_pnl": 0.0,
                 "unrealized_pnl_pct": 0.0,
                 "opened_at": b_metrics["timestamp"],
+                "updated_at": b_metrics["timestamp"],
                 "last_updated": b_metrics["timestamp"],
             }
             backend.save_position(test_pos)
             portfolio["cash_balance"] = round(portfolio.get("cash_balance", 100000.0) - total_cap, 2)
+            portfolio["total_trades_count"] = portfolio.get("total_trades_count", 0) + 1
+            portfolio["last_trade_at"] = b_metrics["timestamp"]
 
         current_open_positions = backend.get_all_open_positions()
         portfolio["open_positions_count"] = len(current_open_positions)
         total_floating = sum(p.get("unrealized_pnl", 0.0) for p in current_open_positions)
         invested_capital = sum(p.get("capital_invested", 0.0) for p in current_open_positions)
+        portfolio["invested_capital"] = round(invested_capital, 2)
         portfolio["total_equity"] = round(portfolio["cash_balance"] + invested_capital + total_floating, 2)
+        portfolio["updated_at"] = b_metrics["timestamp"]
         portfolio["last_updated"] = b_metrics["timestamp"]
         backend.update_portfolio(portfolio)
 

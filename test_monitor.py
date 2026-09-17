@@ -10,6 +10,9 @@ import pytz
 
 from monitor import (
     DEFAULT_USER_AGENT,
+    PAPER_PORTFOLIO_COLUMNS,
+    PAPER_POSITIONS_COLUMNS,
+    PAPER_TRADES_COLUMNS,
     SupabaseBackend,
     calculate_trade_sizing,
     check_sustained_deviation,
@@ -425,5 +428,109 @@ def test_paper_trading_persistence_memory_mode():
     backend.delete_position("XOM-CVX")
     assert backend.get_open_position("XOM-CVX") is None
     assert len(backend.get_all_open_positions()) == 0
+
+
+# ---------------------------------------------------------------------------
+# Test Supabase Schema Compliance & Payload Sanitization
+# ---------------------------------------------------------------------------
+def test_supabase_payload_sanitization_and_schema_compliance():
+    from unittest.mock import MagicMock
+
+    backend = SupabaseBackend(url=None, key=None)
+    mock_client = MagicMock()
+    backend.client = mock_client
+
+    # 1. Test update_portfolio sanitization
+    portfolio_input = {
+        "id": 1,
+        "cash_balance": 85000.0,
+        "invested_capital": 15000.0,
+        "total_equity": 100000.0,
+        "realized_pnl": 500.0,
+        "last_updated": "2026-09-17T10:00:00+00:00",
+        "open_positions_count": 2,
+        "non_existent_field": "disallowed",
+    }
+    backend.update_portfolio(portfolio_input)
+
+    mock_client.table.assert_called_with("paper_portfolio")
+    upsert_call = mock_client.table("paper_portfolio").upsert.call_args[0][0]
+    for key in upsert_call.keys():
+        assert key in PAPER_PORTFOLIO_COLUMNS
+    assert "open_positions_count" not in upsert_call
+    assert "non_existent_field" not in upsert_call
+    assert upsert_call["total_realized_pnl"] == 500.0
+    assert upsert_call["updated_at"] == "2026-09-17T10:00:00+00:00"
+
+    # 2. Test save_position sanitization
+    pos_input = {
+        "pair_key": "HD-LOW",
+        "direction": "LONG_SPREAD",
+        "ticker_a": "HD",
+        "side_a": "BUY",
+        "shares_a": 32,
+        "entry_price_a": 304.06,
+        "current_price_a": 302.47,
+        "ticker_b": "LOW",
+        "side_b": "SELL_SHORT",
+        "shares_b": 38,
+        "entry_price_b": 194.26,
+        "current_price_b": 194.10,
+        "locked_beta": 0.7652,
+        "entry_spread": 109.80,
+        "current_spread": 108.37,
+        "entry_z_score": -3.11,
+        "current_z_score": -2.85,
+        "capital_invested": 17111.80,
+        "unrealized_pnl": -44.80,
+        "unrealized_pnl_pct": -0.26,
+        "last_updated": "2026-09-17T10:00:00+00:00",
+        "extra_ui_badge": "LONG",
+    }
+    backend.save_position(pos_input)
+
+    mock_client.table.assert_called_with("paper_positions")
+    pos_upsert_call = mock_client.table("paper_positions").upsert.call_args[0][0]
+    for key in pos_upsert_call.keys():
+        assert key in PAPER_POSITIONS_COLUMNS
+    assert "last_updated" not in pos_upsert_call
+    assert "extra_ui_badge" not in pos_upsert_call
+    assert pos_upsert_call["updated_at"] == "2026-09-17T10:00:00+00:00"
+
+    # 3. Test record_trade sanitization
+    trade_input = {
+        "trade_id": "custom-uuid-999",
+        "pair_key": "HD-LOW",
+        "action": "ENTER_PAIR",
+        "direction": "LONG_SPREAD",
+        "side_a": "BUY",
+        "ticker_a": "HD",
+        "shares_a": 32,
+        "price_a": 304.06,
+        "capital_a": 9729.92,
+        "side_b": "SELL_SHORT",
+        "ticker_b": "LOW",
+        "shares_b": 38,
+        "price_b": 194.26,
+        "capital_b": 7381.88,
+        "total_capital": 17111.80,
+        "beta_used": 0.7652,
+        "z_score_at_trade": -3.11,
+        "executed_at": "2026-09-17T10:00:00+00:00",
+    }
+    backend.record_trade(trade_input)
+
+    mock_client.table.assert_called_with("paper_trades")
+    trade_insert_call = mock_client.table("paper_trades").insert.call_args[0][0]
+    for key in trade_insert_call.keys():
+        assert key in PAPER_TRADES_COLUMNS
+    assert "trade_id" not in trade_insert_call
+    assert "capital_a" not in trade_insert_call
+    assert "capital_b" not in trade_insert_call
+    assert trade_insert_call["capital_allocated"] == 17111.80
+    assert trade_insert_call["locked_beta"] == 0.7652
+    assert trade_insert_call["z_score"] == -3.11
+    assert trade_insert_call["reason"] == "STATISTICAL_DIVERGENCE"
+    assert trade_insert_call["spread"] == 0.0
 
 
